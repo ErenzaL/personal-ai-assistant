@@ -32,7 +32,9 @@ export function ChatWindow({ onClose }: ChatWindowProps) {
     sendQuickAction,
     retry,
     newConversation,
-  } = useChat();
+    confirmProposal,
+    cancelProposal,
+  } = useChat(settings.defaultCalendarId);
 
   const back = useCallback(() => setView("chat"), []);
 
@@ -60,7 +62,11 @@ export function ChatWindow({ onClose }: ChatWindowProps) {
         onClose={onClose}
       />
       {view === "settings" ? (
-        <SettingsPanel settings={settings} onUpdateSettings={update} />
+        <SettingsPanel
+          settings={settings}
+          onUpdateSettings={update}
+          onHistoryCleared={() => void newConversation()}
+        />
       ) : (
         <>
           <MessageList
@@ -68,6 +74,8 @@ export function ChatWindow({ onClose }: ChatWindowProps) {
             emptyHint={isLoading ? "Loading…" : undefined}
             showTyping={isThinking}
             onRetry={canRetry ? retry : undefined}
+            onConfirmProposal={(id, proposal) => void confirmProposal(id, proposal)}
+            onCancelProposal={cancelProposal}
           />
           <QuickActions actions={QUICK_ACTIONS} onSelect={sendQuickAction} disabled={busy} />
           <ChatInput onSend={send} disabled={busy} />

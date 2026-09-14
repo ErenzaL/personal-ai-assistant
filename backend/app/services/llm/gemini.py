@@ -5,9 +5,20 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from app.services.llm.base import ChatMessage, HttpLLMService, LLMResponseError
+from app.services.embeddings import EXPECTED_DIMENSIONS
+from app.services.llm.base import ChatMessage, EmbeddingTask, HttpLLMService, LLMResponseError
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# A separate, cheaper model from the chat model: embeddings are billed and
+# rate-limited independently of `generateContent`, so calling this on every
+# message does not compete with the chat quota.
+EMBEDDING_MODEL = "gemini-embedding-001"
+# RETRIEVAL_DOCUMENT for memory content being stored, RETRIEVAL_QUERY for a
+# message being searched with -- Gemini's asymmetric embeddings are tuned
+# for exactly this document/query split and retrieve better than embedding
+# both sides the same way.
+_TASK_TYPE: dict[EmbeddingTask, str] = {"document": "RETRIEVAL_DOCUMENT", "query": "RETRIEVAL_QUERY"}
 
 
 class GeminiService(HttpLLMService):
@@ -70,3 +81,24 @@ class GeminiService(HttpLLMService):
             for part in (candidates[0].get("content") or {}).get("parts") or []:
                 if part.get("text") and not part.get("thought"):
                     yield part["text"]
+
+    async def embed(self, text: str, *, task: EmbeddingTask) -> list[float] | None:
+        text = text.strip()
+        if not text:
+            return None
+        url = f"{BASE_URL}/{EMBEDDING_MODEL}:embedContent"
+        payload = {
+            "content": {"parts": [{"text": text}]},
+            "taskType": _TASK_TYPE[task],
+            "outputDimensionality": EXPECTED_DIMENSIONS,
+        }
+        try:
+            data = await self._post_json(url, headers=self._headers(), payload=payload)
+        except Exception:
+            # Embedding failures must never take the chat request down: every
+            # caller already treats None as "fall back to keyword matching."
+            return None
+        values = (data.get("embedding") or {}).get("values")
+        if not isinstance(values, list) or not values:
+            return None
+        return [float(v) for v in values]

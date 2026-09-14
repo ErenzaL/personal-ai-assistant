@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 import { MessageBubble } from "./MessageBubble";
+import { EventProposalCard } from "./EventProposalCard";
 import type { Message } from "../../types/chat";
 import "./MessageList.css";
 
@@ -11,6 +12,8 @@ export interface MessageListProps {
   showTyping?: boolean;
   /** When set, a Retry button is shown under the last (failed) message. */
   onRetry?: () => void;
+  onConfirmProposal?: (messageId: string, proposal: import("../../types/calendar").EventProposal) => void;
+  onCancelProposal?: (messageId: string) => void;
 }
 
 /** How close to the bottom (px) the user must be for auto-follow to stay on. */
@@ -21,7 +24,14 @@ const FOLLOW_THRESHOLD = 48;
  * if they scroll up to read, streaming text no longer yanks them down. A new
  * message count (the user just sent something) always re-engages follow.
  */
-export function MessageList({ messages, emptyHint, showTyping = false, onRetry }: MessageListProps) {
+export function MessageList({
+  messages,
+  emptyHint,
+  showTyping = false,
+  onRetry,
+  onConfirmProposal,
+  onCancelProposal,
+}: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
 
@@ -51,7 +61,17 @@ export function MessageList({ messages, emptyHint, showTyping = false, onRetry }
     <div className="message-list" role="log" aria-live="polite" ref={listRef} onScroll={onScroll}>
       {messages.length === 0 && emptyHint && <p className="message-list__empty">{emptyHint}</p>}
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
+        <Fragment key={message.id}>
+          {message.text.trim() && <MessageBubble message={message} />}
+          {message.proposal && (
+            <EventProposalCard
+              proposal={message.proposal}
+              resolved={message.proposalResolved}
+              onConfirm={(p) => onConfirmProposal?.(message.id, p)}
+              onCancel={() => onCancelProposal?.(message.id)}
+            />
+          )}
+        </Fragment>
       ))}
       {onRetry && (
         <button type="button" className="message-list__retry" onClick={onRetry}>

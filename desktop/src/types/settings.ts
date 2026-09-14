@@ -37,8 +37,30 @@ export const STYLE_LABEL: Record<string, string> = {
   friendly: "Friendly",
 };
 
+export const REMINDER_MINUTES_MIN = 1;
+export const REMINDER_MINUTES_MAX = 120;
+
+/** Ordinary settings, stored by the backend in SQLite. */
 export interface AssistantSettings {
   assistantName: string;
   responseStyle: string;
   availableStyles: string[];
+  /** EventKit identifier for new events; null means the macOS default. */
+  defaultCalendarId: string | null;
+  /** Minutes before an event that a reminder alerts. */
+  reminderMinutes: number;
+  /** Whether calendar reminders alert at all. */
+  calendarNotifications: boolean;
+  /** Whether the mascot appears when the cursor touches the bottom-right edge. */
+  edgeActivation: boolean;
 }
+
+export type SettingsPatch = Partial<
+  Pick<
+    AssistantSettings,
+    "assistantName" | "responseStyle" | "reminderMinutes" | "calendarNotifications" | "edgeActivation"
+  >
+> & {
+  /** Empty string clears the choice and falls back to the macOS default. */
+  defaultCalendarId?: string;
+};

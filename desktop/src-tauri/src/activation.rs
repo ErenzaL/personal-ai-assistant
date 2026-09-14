@@ -44,6 +44,9 @@ const HIDE_DELAY: Duration = Duration::from_secs(3);
 /// Polling interval. 80 ms is fast enough to feel instant and cheap enough to
 /// be invisible in Activity Monitor.
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
+/// Tick while hidden with edge activation switched off: nothing to watch for
+/// except a tray click, which a slower tick still answers promptly.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 /// Extra margin around the mascot window that still counts as "over the mascot",
 /// in logical pixels. Absorbs the gap between the trigger strip and the window
@@ -52,7 +55,6 @@ const HOVER_SLACK: f64 = 16.0;
 
 /// Shared flags other parts of the app can flip to influence visibility.
 /// Managed as Tauri state so a future chat feature can set `chat_open`.
-#[derive(Default)]
 pub struct VisibilityFlags {
     /// While true the mascot never auto-hides. Set by the `set_chat_open`
     /// command while the chat panel is open.
@@ -60,6 +62,23 @@ pub struct VisibilityFlags {
     /// One-shot request to show the mascot (e.g. from the tray menu). The
     /// poller consumes it on the next tick and treats it like an edge trigger.
     pub show_requested: AtomicBool,
+    /// While true a reminder popup is showing, which pins the window like an
+    /// open chat does. Set by the reminder service, cleared by snooze/dismiss.
+    pub reminder_open: AtomicBool,
+    /// Whether the bottom-right edge reveals the mascot at all. Off means
+    /// only the tray menu and reminders show it. Pushed from the stored settings.
+    pub edge_enabled: AtomicBool,
+}
+
+impl Default for VisibilityFlags {
+    fn default() -> Self {
+        Self {
+            chat_open: AtomicBool::new(false),
+            show_requested: AtomicBool::new(false),
+            reminder_open: AtomicBool::new(false),
+            edge_enabled: AtomicBool::new(true),
+        }
+    }
 }
 
 /// Visibility state machine. Only the polling thread reads or writes it.
@@ -102,7 +121,8 @@ fn poll_loop(app: AppHandle) {
     debug_log!("poller started (pid {own_pid})");
 
     loop {
-        thread::sleep(POLL_INTERVAL);
+        let idle = matches!(state, Visibility::Hidden) && !flags.edge_enabled.load(Ordering::Relaxed);
+        thread::sleep(if idle { IDLE_POLL_INTERVAL } else { POLL_INTERVAL });
 
         let cursor = match app.cursor_position() {
             Ok(cursor) => cursor,
@@ -111,9 +131,11 @@ fn poll_loop(app: AppHandle) {
                 continue;
             }
         };
-        let in_trigger = in_trigger_strip(&app, &window, cursor);
+        let in_trigger =
+            flags.edge_enabled.load(Ordering::Relaxed) && in_trigger_strip(&app, &window, cursor);
         let over_mascot = mascot_window::is_cursor_over(&window, cursor, HOVER_SLACK);
-        let chat_open = flags.chat_open.load(Ordering::Relaxed);
+        let chat_open = flags.chat_open.load(Ordering::Relaxed)
+            || flags.reminder_open.load(Ordering::Relaxed);
         let show_requested = flags.show_requested.swap(false, Ordering::Relaxed);
         // The mascot window is non-focusable, so it never becomes frontmost
         // itself. Treat our own pid (e.g. Dock icon clicked) as "no change".

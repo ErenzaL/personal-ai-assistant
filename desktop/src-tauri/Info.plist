@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Merged into the bundled app by Tauri, and embedded into the binary at link
+    time by build.rs so that `tauri dev` can prompt too. macOS refuses calendar
+    access (and terminates the process) without a usage description.
+
+    NSCalendarsFullAccessUsageDescription is the macOS 14+ key and covers both
+    reading and creating events. NSCalendarsUsageDescription is the pre-14
+    spelling, kept so older systems show the same sentence.
+  -->
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Your assistant reads your calendars to answer questions about your schedule, and adds events when you ask it to.</string>
+
+  <key>NSCalendarsUsageDescription</key>
+  <string>Your assistant reads your calendars to answer questions about your schedule, and adds events when you ask it to.</string>
+</dict>
+</plist>

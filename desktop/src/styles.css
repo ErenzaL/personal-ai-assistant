@@ -38,6 +38,12 @@ body,
   user-select: text;
 }
 
+/* Reminder popup slot: sits directly above the mascot, chat or no chat. */
+.app__reminder {
+  flex: none;
+  padding: var(--window-padding) var(--window-padding) 0;
+}
+
 .app__mascot {
   flex: none;
   box-sizing: border-box;

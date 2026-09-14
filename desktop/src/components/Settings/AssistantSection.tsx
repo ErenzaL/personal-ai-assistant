@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { STYLE_LABEL, type AssistantSettings } from "../../types/settings";
+import type { AssistantSettings } from "../../types/settings";
 
 export interface AssistantSectionProps {
   settings: AssistantSettings;
-  onUpdate: (patch: { assistantName?: string; responseStyle?: string }) => void;
+  onUpdate: (patch: { assistantName?: string }) => void;
 }
 
 /** Pause after typing before the name is saved. */
 const SAVE_DELAY_MS = 600;
 
 /**
- * Assistant name and response style. Both are stored by the backend and feed
- * the assistant's system instructions. The name saves shortly after typing
- * stops, and immediately on Enter or when the field loses focus, so a change
- * is never lost by navigating away.
+ * The assistant's name, stored by the backend and fed into its system
+ * instructions. It saves shortly after typing stops, and immediately on
+ * Enter or when the field loses focus, so a change is never lost.
  */
 export function AssistantSection({ settings, onUpdate }: AssistantSectionProps) {
   const [name, setName] = useState(settings.assistantName);
@@ -61,20 +60,6 @@ export function AssistantSection({ settings, onUpdate }: AssistantSectionProps) 
             }
           }}
         />
-      </label>
-      <label className="settings-field">
-        <span className="settings-field__label">Response style</span>
-        <select
-          className="settings-field__input"
-          value={settings.responseStyle}
-          onChange={(event) => onUpdate({ responseStyle: event.target.value })}
-        >
-          {settings.availableStyles.map((style) => (
-            <option key={style} value={style}>
-              {STYLE_LABEL[style] ?? style}
-            </option>
-          ))}
-        </select>
       </label>
     </section>
   );

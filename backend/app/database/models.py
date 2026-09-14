@@ -77,7 +77,8 @@ class Notification:
 
 @dataclass(frozen=True)
 class Memory:
-    """A durable fact about the user. Not tied to any conversation."""
+    """A durable fact about the user. Independent of any conversation: a
+    conversation may be deleted without taking its memories with it."""
 
     id: str
     category: MemoryCategory
@@ -88,3 +89,12 @@ class Memory:
     is_active: bool
     created_at: str
     updated_at: str
+    """0..1: how much this matters if true, distinct from `confidence` (how
+    sure the extractor was that it is true). Used to rank and prune."""
+    importance: float = 0.5
+    """The memory's own semantic vector, or None if none could be generated
+    (no embedding-capable provider, or a transient failure)."""
+    embedding: list[float] | None = None
+    """Which conversation this was learned from, if any. Kept for audit only;
+    never required for the memory to remain valid."""
+    source_conversation_id: str | None = None

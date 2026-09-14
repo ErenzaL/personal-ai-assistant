@@ -42,6 +42,8 @@ window that rests at the bottom-right of the current monitor's work area
 | `src-tauri/src/mascot_window.rs`       | Resting position (bottom-right); cursor-over hit test       |
 | `src-tauri/src/platform.rs`            | macOS-only: frontmost app pid; float over full-screen Spaces |
 | `src-tauri/src/tray.rs`                | Menu bar icon with Show / Quit (app has no Dock icon)       |
+| `src-tauri/src/calendar/`              | EventKit bridge: `types.rs`, `eventkit.rs` (worker thread owning `EKEventStore`), `commands.rs` |
+| `src-tauri/Info.plist`                 | Calendar usage descriptions; embedded into the binary by `build.rs` so `tauri dev` can prompt |
 | `src-tauri/src/activation.rs`          | Edge-activation poller and visibility state machine         |
 | `src-tauri/capabilities/default.json`  | Grants `core:window:allow-start-dragging` for drag-to-move  |
 | `src/components/Avatar/`               | Generic image component with hover lift (`src`, `alt`, `size`) |
@@ -102,6 +104,24 @@ no longer switches Spaces, so chat works inside full-screen apps too.
 
 Set `MASCOT_DEBUG=1` before `npm run tauri dev` to log the poller's state
 transitions and the live window's level/behavior to the terminal.
+
+### Calendar
+
+React calls four Tauri commands (`calendar_get_authorization_status`,
+`calendar_request_access`, `calendar_list_calendars`, `calendar_list_events`)
+that reach Apple's EventKit. The assistant reaches the calendar through two client-executed tools,
+`calendar.read` and `calendar.propose_event`, which the backend dispatches to
+the app because it cannot reach a calendar itself. A proposed event is shown
+as a confirmation card and is written only when the user presses Confirm (see
+calendar-design.md sections H and I). The Python backend is not involved and there are no
+credentials, because macOS owns the permission and the Calendar database owns
+the accounts (iCloud, Google, anything configured in System Settings).
+`EKEventStore` is neither `Send` nor `Sync`, and Apple asks for one long-lived
+instance, so a dedicated `eventkit` thread owns the store and every call is
+posted to it, from a blocking thread so the async runtime is never held.
+In development the binary is re-signed by a cargo runner
+(`scripts/dev-sign-run.sh`) so macOS binds the embedded usage
+description; without that the permission prompt never appears. Remaining phases are in [calendar-design.md](calendar-design.md).
 
 ### Chat panel
 
@@ -302,13 +322,14 @@ tools, and execution is deliberately separate from writing the answer:
 
 | Stage | Where | What it does |
 |-------|-------|--------------|
-| screen | `tools/selector.py` | regex: could this need a tool? general questions skip everything |
-| select | `tools/selector.py` | one completion -> `{"tool", "arguments"}` or `{"tool": null}`; sees the last 4 turns so "move that one to Friday" resolves |
+| select | `tools/selector.py` | one completion -> `{"tool", "arguments"}` or `{"tool": null}`; sees the last 4 turns so "move that one to Friday" resolves. Every message goes through it: there is no keyword rule in front, the model judges the intent itself |
 | validate + run | `tools/base.py` | Pydantic model per tool, then the handler; never raises |
-| answer | `services/chat.py` | the result JSON goes in the "Results for this message" section and the assistant writes the reply from it |
+| answer | `services/chat.py` | the result is rendered as an indented plain-text note titled "Results for this message", folded into the user's turn, and the assistant writes the reply from it. Not JSON, and not in the system prompt: Gemini 3.5 took a JSON blob labelled with a tool name for one of its own function calls and echoed it back instead of answering |
 
-So a task request costs two completions (selection, then the streamed
-answer); ordinary chat still costs one. Every call returns the same envelope,
+So every message costs two completions (selection, then the streamed
+answer). A keyword gate used to skip selection for ordinary chat, but it
+missed natural phrasings ("what i have this week?"), so it was removed:
+understanding the question is the model's job, not a regex's. Every call returns the same envelope,
 `{"ok": true, "tool", "data"}` or `{"ok": false, "tool", "error"}`, and the
 system prompt tells the assistant to read `ok` first and never describe a
 failure as a success. Because the tool runs *before* the answer is written,
@@ -374,3 +395,80 @@ frontend can call it with `fetch`.
 3. Google Calendar integration
 4. LLM chat
 5. Notifications / reminders
+
+## Upcoming-event reminders
+
+A native service in `src-tauri/src/reminders/` alerts 10 minutes before each
+calendar event. No model and no backend are involved in the timing.
+
+| Piece | What it does |
+|-------|--------------|
+| `store.rs` | one record per event occurrence, keyed `<event id>@<start unix>`, in `reminders.json` under the app data dir; fields: title, start, `remind_at`, `sent`, `snoozed_until`, `dismissed` |
+| `service.rs` | one thread: reads the next 24 h from the EventKit bridge, reconciles records, marks due ones `sent`, saves, then presents them; sleeps until the next alert, at most 60 s |
+| `commands.rs` | `reminder_active`, `reminder_snooze`, `reminder_dismiss` for the popup |
+| `calendar/eventkit.rs` | `list_upcoming`, plus an `EKEventStoreChangedNotification` observer that wakes the thread when the calendar changes |
+
+**One logical reminder.** A due record is marked sent and written to disk
+*before* anything is shown, then one native notification (via
+`tauri-plugin-notification`) and one `reminder:fired` event to React are sent
+from that same record. Restarting cannot repeat an alert, and the popup and
+the notification can never disagree. Snooze re-arms the same record
+(`remind_at = snoozed_until`, `sent = false`); dismiss ends it.
+
+**Reconciling.** A new occurrence gets a record; an existing one keeps its
+state; a record whose occurrence is no longer in the calendar window is
+cancelled. Because the start time is part of the key, a moved event is a
+cancel plus a fresh reminder. All-day events and events that already started
+get nothing.
+
+**Showing it.** `commands::apply_reminder_open` sizes the window to the
+`Reminder` mode and sets `VisibilityFlags::reminder_open`, which pins the
+window like an open chat; `show_requested` makes the poller reveal the mascot.
+React bounces the avatar (CSS only), shows a badge, and renders
+`ReminderPopup`. `--demo-reminder` at launch plants a fake event 11 minutes
+out whose alert is due at once, for trying the flow without a real event.
+
+## Settings (V1)
+
+The panel is deliberately small: General, Assistant, Personal memory,
+Calendar, Notifications, Data. Each setting has exactly one owner:
+
+| Setting | Owner | Notes |
+|---------|-------|-------|
+| Assistant name | SQLite (`settings` table, via `preferences.py`) | default "Dully"; feeds the system prompt |
+| Bottom-edge activation | SQLite | pushed to `VisibilityFlags::edge_enabled`; off means only the tray and reminders reveal the mascot |
+| Default calendar for new events | SQLite | an EventKit identifier; empty means the macOS default |
+| Reminder minutes | SQLite | 1-120, validated in the API and the service; pushed to the reminder thread, which moves pending alerts |
+| Calendar notifications | SQLite | pushed to the reminder thread; off marks due alerts sent silently, so nothing piles up |
+| Launch at login | macOS (`SMAppService`) | read live and written through the system; never stored, so it always matches System Settings |
+| Calendar permission | macOS (EventKit) | read live; never stored |
+| Available calendars | macOS (EventKit) | listed live |
+| Personal memories | SQLite (`memories`) | view, add, edit, forget (deactivate) |
+| Clear conversation history | SQLite | `DELETE /conversations`, confirmed inline; the chat starts a fresh conversation |
+| Clear personal memories | SQLite | deactivates every memory, confirmed inline |
+
+The native side never persists these itself: the UI pushes the three it
+enforces (`apply_settings`) when settings load and whenever they change, so
+the backend's SQLite stays the single record. Until that first push after
+launch the native defaults apply (edge on, 10 minutes, alerts on). There is
+no global shortcut in V1, so none is shown.
+
+## Reliability pass (V1 final)
+
+| Concern | Where | Behaviour |
+|---------|-------|-----------|
+| Launch at login | `platform.rs` (SMAppService), Settings | registered only when the user turns it on; the app starts hidden, as an accessory, without focus, and starts the backend itself |
+| Backend lifecycle | `src-tauri/src/backend.rs` | reuse a running backend, else start `.venv` uvicorn on 127.0.0.1 only; wait for `/health`; restart up to 3 times; stop on quit; log to `backend.log` |
+| Calendar permission at start | `lib.rs` | read live; ask once if never asked; never stored. Settings explains a denial and opens System Settings |
+| Revoked permission | EventKit change notification + live status | reads fail with `not_authorized`, the chat says so, the reminder thread logs once and keeps retrying |
+| Model failures | `llm/base.py`, `api/chat.py` | offline, timeout, rate limit and rejected key each map to a short message and a status code; streaming errors arrive as an `error` event |
+| Database and unexpected errors | `main.py` handlers | 503 / 500 with a one-line JSON detail; tracebacks stay in the server log |
+| Tauri command inputs | `calendar/commands.rs`, `reminders/commands.rs` | bounded lengths and ranges before anything reaches EventKit or the store |
+| Secrets | `backend/.env` only, ignored by git; the frontend has no key names | |
+| CORS | `main.py` | the webview's origins only; GET/POST/PATCH/DELETE; Content-Type/Accept |
+| Background cost | poller 80 ms (400 ms when hidden with edge activation off); reminder thread sleeps until the next alert, at most 60 s; no model calls on timers; CSS animation only on hover and on a reminder | |
+
+Known limits: no content security policy is set on the webview yet; macOS
+gives no API to read whether notifications were denied, so the in-app popup
+is the fallback; the ad-hoc signature changes with every rebuild, so calendar
+access and the login item are re-asked after a rebuild.

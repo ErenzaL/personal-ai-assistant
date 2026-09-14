@@ -102,3 +102,84 @@ pub fn describe_window(window: &WebviewWindow) -> String {
 pub fn describe_window(_window: &WebviewWindow) -> String {
     String::new()
 }
+
+/// Login-item state as macOS reports it.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LoginItem {
+    /// False when this is not an app bundle macOS can register (e.g. the
+    /// bare development binary).
+    pub supported: bool,
+    pub enabled: bool,
+    /// Registered, but the user still has to approve it in System Settings.
+    pub requires_approval: bool,
+}
+
+/// True when running from inside an app bundle, which is what macOS can
+/// register as a login item. False for the bare development binary.
+fn in_app_bundle() -> bool {
+    std::env::current_exe()
+        .map(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+pub fn login_item_status() -> LoginItem {
+    use objc2_service_management::{SMAppService, SMAppServiceStatus};
+    if !in_app_bundle() {
+        return LoginItem { supported: false, enabled: false, requires_approval: false };
+    }
+    // SAFETY: a query on the main app's own service object; no threading
+    // requirements are documented for `status`.
+    let status = unsafe { SMAppService::mainAppService().status() };
+    match status {
+        SMAppServiceStatus::Enabled => LoginItem { supported: true, enabled: true, requires_approval: false },
+        SMAppServiceStatus::RequiresApproval => LoginItem { supported: true, enabled: false, requires_approval: true },
+        // NotRegistered, or NotFound (no record yet): registering is still
+        // worth a try, and its error, if any, is shown in Settings.
+        _ => LoginItem { supported: true, enabled: false, requires_approval: false },
+    }
+}
+
+/// `--login-item status|on|off`: print what macOS reports, for diagnosis.
+#[cfg(target_os = "macos")]
+pub fn login_item_diagnostic(action: &str) -> String {
+    use objc2_service_management::SMAppService;
+    let raw = unsafe { SMAppService::mainAppService().status() }.0;
+    let outcome = match action {
+        "on" => set_login_item(true),
+        "off" => set_login_item(false),
+        _ => Ok(login_item_status()),
+    };
+    match outcome {
+        Ok(item) => format!("raw status {raw}: {item:?}"),
+        Err(err) => format!("raw status {raw}: error: {err}"),
+    }
+}
+
+/// Register or unregister the app as a login item (macOS 13+). The change
+/// shows up under System Settings > General > Login Items.
+#[cfg(target_os = "macos")]
+pub fn set_login_item(enabled: bool) -> Result<LoginItem, String> {
+    use objc2_service_management::SMAppService;
+    // SAFETY: same object as above; the calls are synchronous.
+    let result = unsafe {
+        let service = SMAppService::mainAppService();
+        if enabled {
+            service.registerAndReturnError()
+        } else {
+            service.unregisterAndReturnError()
+        }
+    };
+    result.map_err(|err| err.localizedDescription().to_string())?;
+    Ok(login_item_status())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn login_item_status() -> LoginItem {
+    LoginItem { supported: false, enabled: false, requires_approval: false }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_login_item(_enabled: bool) -> Result<LoginItem, String> {
+    Err("Launch at login is only available on macOS.".into())
+}

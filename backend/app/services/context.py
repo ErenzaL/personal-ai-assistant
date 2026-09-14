@@ -49,10 +49,10 @@ def select_history(messages: list[Message]) -> list[ChatMessage]:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Outcome of a lookup made for the current message (future use)."""
+    """Outcome of a lookup or action made for the current message."""
 
-    source: str  # human-readable, e.g. "calendar", "tasks"
-    content: str  # already formatted for the model
+    source: str  # the tool name, e.g. "calendar.read"
+    content: str  # plain indented text, never JSON (see ToolOutcome.to_text)
 
 
 @dataclass(frozen=True)
@@ -71,10 +71,14 @@ class PromptContext:
             facts = "\n".join(f"- {fact}" for fact in self.memory)
             out.append(ChatMessage("system", f"{MEMORY_SECTION_TITLE}:\n{facts}"))
         out.extend(self.history)
+        user_turn = self.user_message
         if self.tool_results:
+            # Part of the user's turn, not the system instructions: per-turn
+            # data right next to the message it answers is what the model
+            # treats as material to answer from.
             results = "\n\n".join(f"[{r.source}]\n{r.content}" for r in self.tool_results)
-            out.append(ChatMessage("system", f"{TOOL_RESULTS_SECTION_TITLE}:\n{results}"))
-        out.append(ChatMessage("user", self.user_message))
+            user_turn = f"{TOOL_RESULTS_SECTION_TITLE}:\n{results}\n\n{self.user_message}"
+        out.append(ChatMessage("user", user_turn))
         return out
 
 

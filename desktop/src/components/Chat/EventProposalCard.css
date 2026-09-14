@@ -1,0 +1,90 @@
+.proposal {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 10px 12px;
+  border: 1px solid var(--chat-border);
+  border-radius: 14px;
+  background: var(--chat-bg);
+  font-size: 13px;
+}
+
+.proposal__heading {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--chat-muted);
+}
+
+.proposal__details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.proposal__details dt {
+  color: var(--chat-muted);
+}
+
+.proposal__details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal__form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proposal__field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proposal__field span {
+  color: var(--chat-muted);
+}
+
+.proposal__field input {
+  flex: 1;
+  min-width: 0;
+  max-width: 190px;
+  padding: 3px 7px;
+  border: 1px solid var(--chat-border);
+  border-radius: 7px;
+  background: var(--chat-bg);
+  color: var(--chat-text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.proposal__field input:focus {
+  border-color: var(--chat-accent);
+}
+
+/* A warning, never a blocker: the user may still go ahead. */
+.proposal__conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: #fff6e8;
+  color: #8a5a1b;
+  font-size: 12px;
+}
+
+.proposal__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}

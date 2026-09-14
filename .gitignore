@@ -51,3 +51,9 @@ token.pickle
 *.swp
 *.log
 logs/
+
+# --- Packaged backend / release output ---
+backend/build/
+backend/dist/
+desktop/src-tauri/binaries/
+release/

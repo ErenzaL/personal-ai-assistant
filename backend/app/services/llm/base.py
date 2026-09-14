@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Literal
 import httpx
 
 Role = Literal["system", "user", "assistant"]
+EmbeddingTask = Literal["document", "query"]
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,16 @@ class LLMService(ABC):
     @abstractmethod
     def stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]:
         """Yield the assistant reply as text chunks."""
+
+    async def embed(self, text: str, *, task: EmbeddingTask) -> list[float] | None:
+        """A semantic vector for `text`, or None if this provider has no
+        embedding model. `task` distinguishes text being stored ("document")
+        from text being searched with ("query"); providers that support
+        asymmetric embeddings (Gemini does) give better results when told
+        which is which. Callers must already treat None as "fall back to
+        keyword matching," so the default here -- meaning "unsupported" --
+        needs no separate capability check."""
+        return None
 
     async def aclose(self) -> None:
         """Release network resources. Called at app shutdown."""

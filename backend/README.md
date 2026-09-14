@@ -139,3 +139,25 @@ and "Forget …" are handled by `services/memory_commands.py` (see
 docs/architecture.md). When answering ordinary questions, `services/retrieval.py`
 adds at most three relevant active memories to the prompt, and nothing at all
 for general-knowledge questions.
+
+## Started by the desktop app
+
+For daily use nothing has to be started by hand. When Dully launches it looks
+for a backend on `127.0.0.1:8000`; if one is already running (for example the
+`--reload` server above) it uses that, otherwise it runs `run_backend.py` from this
+folder's `.venv`, bound to localhost only, restarts it up to three times if it
+crashes, and stops it when Dully quits. The script also watches the app and
+shuts down on its own if the app disappears, even after a force quit. Its output goes to `backend.log` in
+the app data folder (`~/Library/Application Support/com.linerenza.personal-ai-assistant/`).
+
+Where the backend lives is taken from, in order: the `DULLY_BACKEND_DIR`
+environment variable, a `backend-path.txt` in that app data folder, or the
+repository the binary sits in (development builds). An installed copy needs
+the text file once.
+
+## Packaged for the release build
+
+`scripts/build-backend.sh` (run by `scripts/build-release.sh`) turns this
+folder into one executable that ships inside `Dully.app`. It reads the API
+key from `~/Library/Application Support/PersonalAIAssistant/.env`, not from
+`backend/.env`. See `docs/release.md`.

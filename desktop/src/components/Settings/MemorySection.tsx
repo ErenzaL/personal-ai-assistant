@@ -7,7 +7,6 @@ export interface MemorySectionProps {
   onAdd: (category: MemoryCategory, content: string) => Promise<boolean>;
   onEdit: (id: string, content: string) => Promise<boolean>;
   onForget: (id: string) => Promise<boolean>;
-  onForgetAll: () => Promise<boolean>;
 }
 
 /**
@@ -16,13 +15,12 @@ export interface MemorySectionProps {
  * source stay internal. Forgetting deactivates a memory, it does not delete
  * the row, and forgetting everything asks first.
  */
-export function MemorySection({ items, isLoading, onAdd, onEdit, onForget, onForgetAll }: MemorySectionProps) {
+export function MemorySection({ items, isLoading, onAdd, onEdit, onForget }: MemorySectionProps) {
   const [adding, setAdding] = useState(false);
   const [draftCategory, setDraftCategory] = useState<MemoryCategory>("preference");
   const [draftContent, setDraftContent] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
-  const [confirmClear, setConfirmClear] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const resetAdd = () => {
@@ -46,12 +44,6 @@ export function MemorySection({ items, isLoading, onAdd, onEdit, onForget, onFor
     if (ok) setEditingId(null);
   };
 
-  const clearAll = async () => {
-    setBusy(true);
-    await onForgetAll();
-    setBusy(false);
-    setConfirmClear(false);
-  };
 
   return (
     <section className="settings-section">
@@ -160,31 +152,6 @@ export function MemorySection({ items, isLoading, onAdd, onEdit, onForget, onFor
         ))}
       </ul>
 
-      {items.length > 0 &&
-        (confirmClear ? (
-          <div className="settings-confirm">
-            <span>Forget all {items.length} {items.length === 1 ? "memory" : "memories"}?</span>
-            <button
-              type="button"
-              className="settings-link settings-link--danger"
-              onClick={() => void clearAll()}
-              disabled={busy}
-            >
-              Yes, forget all
-            </button>
-            <button type="button" className="settings-link" onClick={() => setConfirmClear(false)}>
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            className="settings-link settings-link--danger settings-section__footer"
-            onClick={() => setConfirmClear(true)}
-          >
-            Forget all
-          </button>
-        ))}
     </section>
   );
 }

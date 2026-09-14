@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from typing import Any
 
 from app.database.models import MEMORY_CATEGORIES, Memory, MemoryCategory
 from app.database.repositories.memories import MemoryRepository
@@ -22,7 +23,11 @@ KEY_STOPWORDS = {
 }
 KEY_MAX_LEN = 64
 CONTENT_MAX_LEN = 1000
-SOURCES = ("user", "assistant", "import")
+# "auto": saved by the passive extraction pipeline, without the user
+# explicitly asking. "user"/"assistant"/"import" are the older, still-valid
+# provenances (a memory created before this feature, or by whatever the
+# manual API endpoint still allows).
+SOURCES = ("user", "assistant", "import", "auto")
 
 
 class MemoryError(Exception):
@@ -45,9 +50,18 @@ class MemoryConflict(MemoryError):
     pass
 
 
+# Sentinel distinct from None: an omitted `embedding` argument means "leave
+# it as is," while an explicit None means "clear it."
+_NO_CHANGE = object()
+
+
 class MemoryService:
     def __init__(self, db: sqlite3.Connection) -> None:
         self._repo = MemoryRepository(db)
+
+    def list_with_embeddings(self) -> list[Memory]:
+        """Active memories that have a vector to compare against."""
+        return self._repo.list_with_embeddings()
 
     # --- writes ---
 
@@ -59,6 +73,9 @@ class MemoryService:
         *,
         source: str = "user",
         confidence: float = 1.0,
+        importance: float = 0.5,
+        embedding: list[float] | None = None,
+        source_conversation_id: str | None = None,
     ) -> Memory:
         """Create a memory. `key` may be None, in which case one is derived
         from the content (and suffixed if that slug is taken), so callers that
@@ -67,6 +84,7 @@ class MemoryService:
         content = _valid_content(content)
         source = _valid_source(source)
         confidence = _valid_confidence(confidence)
+        importance = _valid_importance(importance)
         if key is None:
             key = self._free_key(category, slug_key(content))
         else:
@@ -78,7 +96,10 @@ class MemoryService:
                     f"A {category} memory with key '{key}' already exists ({state}, id {existing.id}). "
                     "Update it instead."
                 )
-        return self._repo.create(category, key, content, source=source, confidence=confidence)
+        return self._repo.create(
+            category, key, content, source=source, confidence=confidence,
+            importance=importance, embedding=embedding, source_conversation_id=source_conversation_id,
+        )
 
     def _free_key(self, category: MemoryCategory, base: str) -> str:
         """First unused key of the form base, base_2, base_3, ..."""
@@ -97,14 +118,26 @@ class MemoryService:
         content: str | None = None,
         source: str | None = None,
         confidence: float | None = None,
+        importance: float | None = None,
+        embedding: list[float] | None | object = _NO_CHANGE,
+        source_conversation_id: str | None = None,
     ) -> Memory:
-        if content is None and source is None and confidence is None:
+        if content is None and source is None and confidence is None and importance is None and embedding is _NO_CHANGE:
             raise InvalidMemory("Nothing to update.")
+        repo_kwargs: dict[str, Any] = {}
+        # The repository has its own "leave as is" sentinel; only pass
+        # `embedding` through when this call actually specifies one
+        # (including an explicit None, which means "clear it").
+        if embedding is not _NO_CHANGE:
+            repo_kwargs["embedding"] = embedding
         updated = self._repo.update(
             memory_id,
             content=_valid_content(content) if content is not None else None,
             source=_valid_source(source) if source is not None else None,
             confidence=_valid_confidence(confidence) if confidence is not None else None,
+            importance=_valid_importance(importance) if importance is not None else None,
+            source_conversation_id=source_conversation_id,
+            **repo_kwargs,
         )
         if updated is None:
             raise MemoryNotFound(f"No memory with id {memory_id}.")
@@ -201,3 +234,9 @@ def _valid_confidence(confidence: float) -> float:
     if not 0.0 <= confidence <= 1.0:
         raise InvalidMemory("Confidence must be between 0 and 1.")
     return float(confidence)
+
+
+def _valid_importance(importance: float) -> float:
+    if not 0.0 <= importance <= 1.0:
+        raise InvalidMemory("Importance must be between 0 and 1.")
+    return float(importance)

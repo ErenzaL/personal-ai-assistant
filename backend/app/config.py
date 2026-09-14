@@ -1,12 +1,18 @@
-"""Settings loaded from the environment and `backend/.env`.
+"""Settings loaded from the environment and a `.env` file.
 
 Secrets live here and nowhere else. Nothing in this module is ever returned by
 an HTTP endpoint or logged.
+
+Where the file lives: `backend/.env` in development; the packaged backend
+(one executable, no source folder) reads `.env` from the app-data folder
+instead, which is also where the database is. Real environment variables take
+precedence over either file.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -14,10 +20,32 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+# True inside the PyInstaller-built executable.
+FROZEN = bool(getattr(sys, "frozen", False))
+APP_DIR_NAME = "PersonalAIAssistant"
 
-# Populate os.environ from backend/.env if present. Real environment variables
-# take precedence over the file, which is what you want in production.
-load_dotenv(BACKEND_DIR / ".env")
+
+def app_data_dir() -> Path:
+    """Per-user application-data folder: the database, the key file, logs."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / APP_DIR_NAME
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA")
+        return (Path(base) if base else home / "AppData" / "Local") / APP_DIR_NAME
+    base = os.environ.get("XDG_DATA_HOME")
+    return (Path(base) if base else home / ".local" / "share") / APP_DIR_NAME
+
+
+def _load_env_files() -> None:
+    # `load_dotenv` never overrides a variable that is already set, so the
+    # first file wins and real environment variables win over both.
+    if not FROZEN:
+        load_dotenv(BACKEND_DIR / ".env")
+    load_dotenv(app_data_dir() / ".env")
+
+
+_load_env_files()
 
 
 @dataclass(frozen=True)

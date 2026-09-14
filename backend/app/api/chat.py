@@ -1,6 +1,7 @@
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,12 +37,22 @@ def _http_error(err: LLMError) -> HTTPException:
     )
 
 
+class ToolResultIn(BaseModel):
+    """A client-side tool's outcome, posted back by the desktop app."""
+
+    name: str = Field(min_length=1, max_length=64)
+    result: dict[str, Any]
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     """Conversation to append to. Omitted: the current conversation."""
     conversation_id: str | None = None
     """On retry: id of the already-saved user message, so it is not saved twice."""
     user_message_id: str | None = None
+    """Second pass of a client-executed tool: results the app produced. When
+    present, no tool is selected again -- these go straight into the prompt."""
+    tool_results: list[ToolResultIn] = Field(default_factory=list, max_length=4)
 
 
 class ChatResponse(BaseModel):
@@ -87,19 +98,53 @@ async def _memory_reply(turn: Turn, db: sqlite3.Connection) -> str | None:
     return handler.execute(intent, text, turn.conversation.id)
 
 
-async def _with_tools(turn: Turn, db: sqlite3.Connection) -> Turn:
-    """Tool phase, kept separate from answer generation: pick a tool, run it,
-    and attach the structured result to the turn. The reply is written
-    afterwards, from that result."""
+@dataclass(frozen=True)
+class ClientToolRequest:
+    """A tool the desktop app must run, because it needs native access."""
+
+    name: str
+    arguments: dict[str, Any]
+
+
+def _attach(turn: Turn, db: sqlite3.Connection, results: list[tuple[str, str]]) -> Turn:
+    return ConversationService.attach_tool_results(
+        turn, [ToolResult(name, body) for name, body in results]
+    )
+
+
+async def _with_tools(
+    request: ChatRequest, turn: Turn, db: sqlite3.Connection
+) -> tuple[Turn, ClientToolRequest | None]:
+    """Tool phase, kept separate from answer generation.
+
+    Returns the turn to answer from, plus a tool for the client to run when
+    the selected tool needs native access. On the second pass the app posts
+    the result back and it is attached directly.
+    """
+    # Second pass: the desktop app already ran the tool.
+    if request.tool_results:
+        rendered = []
+        for item in request.tool_results:
+            body = tools.summarise(item.result) if item.name == tools.CALENDAR_READ else item.result
+            rendered.append((item.name, tools.render_outcome(body)))
+            log.info("client tool %s: %s", item.name, "ok" if item.result.get("ok") else "failed")
+        return _attach(turn, db, rendered), None
+
     text = turn.user_message.content
-    if not tools.screen(text):
-        return turn
     registry = tools.build_registry(db)
     call = await tools.select(get_llm_service(), registry, text, turn.prompt.history)
     if call is None:
-        return turn
+        return turn, None
+
+    # Calendar tools run in the desktop app, not here.
+    if registry.runs_on_client(call.name):
+        checked = registry.validate(call.name, call.arguments)
+        if isinstance(checked, tools.ToolOutcome):
+            return _attach(turn, db, [(call.name, checked.to_text())]), None
+        return turn, ClientToolRequest(call.name, checked)
+
     outcome = registry.execute(call.name, call.arguments)
-    return ConversationService.attach_tool_results(turn, [ToolResult(call.name, outcome.to_json())])
+    return _attach(turn, db, [(call.name, outcome.to_text())]), None
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -108,7 +153,16 @@ async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -
     try:
         answer = await _memory_reply(turn, db)
         if answer is None:
-            turn = await _with_tools(turn, db)
+            turn, client_tool = await _with_tools(request, turn, db)
+            if client_tool is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "client_tool_required",
+                        "message": "This question needs the desktop app to read the calendar.",
+                        "tool": {"name": client_tool.name, "arguments": client_tool.arguments},
+                    },
+                )
             answer = await ChatService(get_llm_service()).reply(turn)
     except LLMError as err:
         raise _http_error(err) from err
@@ -131,6 +185,9 @@ async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -
 # Failures *before* the first token still surface as a normal HTTP error
 # status, because we wait for the first chunk before committing to a stream.
 # The user message is saved either way; retry with `user_message_id`.
+#   client_tool {"name", "arguments"}          the desktop app must run this
+#                                              tool and POST again with
+#                                              `tool_results`; no answer yet
 # Memory commands are answered as a single delta through this stream. Task
 # requests run their tool first, then stream a reply written from the result.
 
@@ -145,12 +202,26 @@ async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get
     meta = _sse("meta", {"conversation_id": turn.conversation.id, "user_message_id": turn.user_message.id})
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
+    client_tool: ClientToolRequest | None = None
     try:
         command_reply = await _memory_reply(turn, db)
         if command_reply is None:
-            turn = await _with_tools(turn, db)
+            turn, client_tool = await _with_tools(request, turn, db)
     except LLMError as err:
         raise _http_error(err) from err
+
+    # The desktop app has to run this one and post the result back; the reply
+    # is written on that second request. Nothing is saved in the meantime.
+    if client_tool is not None:
+
+        async def tool_events() -> AsyncIterator[str]:
+            yield meta
+            yield _sse(
+                "client_tool",
+                {"name": client_tool.name, "arguments": client_tool.arguments},
+            )
+
+        return StreamingResponse(tool_events(), media_type="text/event-stream", headers=headers)
 
     if command_reply is not None:
 

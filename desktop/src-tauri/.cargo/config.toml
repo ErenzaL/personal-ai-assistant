@@ -1,0 +1,4 @@
+# Sign dev binaries so macOS honours the embedded Info.plist (calendar
+# permission). See scripts/dev-sign-run.sh for why this is needed.
+[target.'cfg(target_os = "macos")']
+runner = "scripts/dev-sign-run.sh"

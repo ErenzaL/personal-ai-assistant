@@ -21,12 +21,19 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-notification = "2.4.0"
+objc2-service-management = { version = "0.3.2", features = ["SMAppService"] }
 
 # Already a transitive dependency of tauri on macOS; enabling these features adds
 # no new crates. Used to detect when another app becomes frontmost.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder"] }
+# EventKit: calendar access through the macOS Calendar database (no OAuth).
+objc2-foundation = { version = "0.3", features = ["NSError", "NSString", "NSDate", "NSDateFormatter", "NSTimeZone", "NSLocale", "NSArray", "NSPredicate", "NSNotification", "NSOperation", "block2"] }
+objc2-core-graphics = "0.3"
+objc2-event-kit = { version = "0.3", features = ["EKEventStore", "EKCalendar", "EKCalendarItem", "EKEvent", "EKSource", "EKObject", "EKTypes", "block2", "objc2-core-graphics"] }
+block2 = "0.6"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

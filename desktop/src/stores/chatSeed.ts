@@ -4,7 +4,7 @@
  */
 import type { QuickAction } from "../types/chat";
 
-export const ASSISTANT_NAME = "Assistant";
+export const ASSISTANT_NAME = "Apollo";
 
 /**
  * Opening line for an empty conversation. Shown as a local assistant bubble
@@ -22,7 +22,6 @@ return `${opener}!\nWhat are we working on today?`;
 }
 
 export const QUICK_ACTIONS: QuickAction[] = [
-  { id: "today", label: "Today", prompt: "What tasks do I have today?" },
-  { id: "tasks", label: "Tasks", prompt: "What are my open tasks?" },
-  { id: "overdue", label: "Overdue", prompt: "What tasks are overdue?" },
+  { id: "today", label: "Today", prompt: "What's on today?" },
+  { id: "tasks", label: "Tasks", prompt: "Show my open tasks." },
 ];

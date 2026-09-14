@@ -1,16 +1,29 @@
 """Choosing which stored memories, if any, belong in a turn's prompt.
 
-Deliberately cheap and deterministic: no extra LLM call and no embeddings, so
-a normal question costs exactly what it did before. The flow is
+Primary path is semantic: `EmbeddingMemoryRetriever` embeds the message and
+ranks stored memories by cosine similarity, so "I want to focus on data
+science now" can find a memory worded "interested in becoming a data
+analyst" with no shared words at all. `KeywordMemoryRetriever` (the original
+term-overlap matcher) is kept as the automatic fallback for when embeddings
+are unavailable -- no key, a provider without an embedding model (Groq), or a
+transient failure -- so retrieval degrades rather than goes silent.
 
-    is_personal()   cheap gate: could stored memory matter here at all?
-    score           term overlap + a category bonus for planning questions
-    cap             top N, within a character budget
+`is_personal()` still gates whether to look at all, even on the semantic
+path. That is a calibration finding, not a stylistic choice: measured
+against this project's own data, gemini-embedding-001 puts nearly all
+short text pairs in a narrow 0.5-0.7 cosine band regardless of relevance --
+"hi" scores *higher* against an unrelated memory than a real match sometimes
+does against its own. There is no absolute similarity value that reliably
+means "irrelevant" here. What the embeddings are genuinely good at, and what
+they are used for, is *ranking*: among memories once we've decided to look,
+the right one reliably comes out on top. Deciding *whether* to look stays a
+cheap, well-tested heuristic; deciding *what* is relevant is semantic. That
+split is not "keyword matching as the retrieval method" -- nothing is scored
+or selected by shared words on the primary path -- it is a pre-filter in
+front of it, same as a spam filter running before a search ranker.
 
-Matching is lexical, so it finds "meetings after 2 PM" for "a good time for a
-meeting" but not for a paraphrase with no shared words. `MemoryRetriever` is a
-Protocol, so an embedding- or LLM-based retriever can replace
-`KeywordMemoryRetriever` later without touching the chat service.
+`MemoryRetriever` is a Protocol so a future implementation can replace either
+without touching the chat service.
 """
 
 from __future__ import annotations
@@ -18,12 +31,20 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from typing import Protocol
+from typing import Iterable, Protocol
 
 from app.database.models import Memory
+from app.services.embeddings import cosine_similarity
+from app.services.llm import LLMService
 from app.services.memory import MemoryService
 
 log = logging.getLogger("app.memory")
+
+# Below this, treat a similarity as noise (a corrupted vector, or the 0.0
+# `cosine_similarity` returns for a dimension mismatch) rather than a real
+# signal. Not a precision floor -- see the module docstring for why one
+# would not work reliably with this embedding model.
+SIMILARITY_FLOOR = 0.35
 
 # Keep the injected block tiny: a handful of short facts, never the database.
 MAX_MEMORIES = 3
@@ -73,12 +94,19 @@ def is_personal(text: str) -> bool:
     return bool(_PERSONAL.search(text) or _PLANNING.search(text))
 
 
+# A trailing contraction/possessive suffix carries no meaning of its own
+# ("what's" -> "what", "don't" -> "don", "you're" -> "you"), so it is
+# stripped before the stopword check; otherwise "what's" survives as a term
+# distinct from "what" and quietly defeats matching on short questions.
+_CONTRACTION_SUFFIX = re.compile(r"'(s|t|re|ve|ll|d|m)$")
+
+
 def _terms(text: str) -> set[str]:
     """Distinctive lowercase terms, with a crude singular form so
     'meetings' matches 'meeting'."""
     out: set[str] = set()
     for word in re.findall(r"[a-z0-9']+", text.lower()):
-        word = word.strip("'")
+        word = _CONTRACTION_SUFFIX.sub("", word).strip("'")
         if len(word) < 2 or word in _STOPWORDS:
             continue
         out.add(word)
@@ -90,23 +118,31 @@ def _terms(text: str) -> set[str]:
 class MemoryRetriever(Protocol):
     """Selects the memories to put in the prompt for one message."""
 
-    def retrieve(self, message: str) -> list[Memory]: ...
+    async def retrieve(self, message: str) -> list[Memory]: ...
 
 
 class KeywordMemoryRetriever:
-    """Term-overlap retrieval over active memories."""
+    """Term-overlap retrieval over active memories. No I/O of its own; async
+    only so it is interchangeable with the embedding retriever that wraps it
+    as a fallback."""
 
     def __init__(self, memory: MemoryService) -> None:
         self._memory = memory
 
-    def retrieve(self, message: str) -> list[Memory]:
+    async def retrieve(self, message: str) -> list[Memory]:
         if not is_personal(message):
             log.debug("memory: skipped (not a personal question)")
             return []
 
         query = _terms(message)
         planning = bool(_PLANNING.search(message))
-        needed = MIN_OVERLAP_PLANNING if planning else MIN_OVERLAP_GENERAL
+        base_needed = MIN_OVERLAP_PLANNING if planning else MIN_OVERLAP_GENERAL
+        # A short, direct question ("What is my name?") can reduce to a
+        # single distinctive term once stopwords are stripped. Requiring
+        # more shared terms than the query even has would make it
+        # impossible to ever match, no matter what is stored, so the
+        # threshold never exceeds the query's own size.
+        needed = min(base_needed, len(query)) if query else base_needed
         scored: list[tuple[int, Memory]] = []
         for record in self._memory.list_memories():
             haystack = _terms(f"{record.key.replace('_', ' ')} {record.content}")
@@ -119,22 +155,67 @@ class KeywordMemoryRetriever:
             scored.append((score, record))
 
         scored.sort(key=lambda pair: (-pair[0], -pair[1].confidence, pair[1].updated_at))
+        selected = _cap(record for _, record in scored)
+        _log_used(selected, "keyword")
+        return selected
 
-        selected: list[Memory] = []
-        budget = MAX_CHARS
-        for _, record in scored[:MAX_MEMORIES]:
-            if len(record.content) > budget:
-                break
-            selected.append(record)
-            budget -= len(record.content)
 
-        # Log identifiers only: never the content of a memory.
-        if selected:
-            log.info(
-                "memory: %d used %s",
-                len(selected),
-                [(m.id[:8], m.category) for m in selected],
-            )
+def _cap(ranked: "Iterable[Memory]") -> list[Memory]:
+    """Top N, within a character budget -- shared by every retriever so the
+    prompt's memory section never grows unbounded regardless of how a
+    memory was ranked."""
+    selected: list[Memory] = []
+    budget = MAX_CHARS
+    for record in ranked:
+        if len(selected) >= MAX_MEMORIES:
+            break
+        if len(record.content) > budget:
+            continue
+        selected.append(record)
+        budget -= len(record.content)
+    return selected
+
+
+def _log_used(selected: list[Memory], method: str) -> None:
+    # Log identifiers only: never the content of a memory.
+    if selected:
+        log.info("memory: %d used via %s %s", len(selected), method, [(m.id[:8], m.category) for m in selected])
+
+
+class EmbeddingMemoryRetriever:
+    """Semantic retrieval: embeds the message, ranks active memories by
+    cosine similarity to their own stored embedding, and falls back to
+    keyword matching whenever an embedding cannot be produced -- no key, a
+    provider without an embedding model, a transient failure, or simply no
+    memory having one yet (a fresh install, before any extraction has run)."""
+
+    def __init__(self, memory: MemoryService, llm: LLMService, fallback: MemoryRetriever) -> None:
+        self._memory = memory
+        self._llm = llm
+        self._fallback = fallback
+
+    async def retrieve(self, message: str) -> list[Memory]:
+        # See the module docstring: the embedding space itself does not
+        # separate relevant from irrelevant at the absolute level, so this
+        # gate still decides *whether* to look.
+        if not is_personal(message):
+            log.debug("memory: skipped (not a personal question)")
+            return []
+
+        pool = self._memory.list_with_embeddings()
+        if not pool:
+            return await self._fallback.retrieve(message)
+
+        query_vector = await self._llm.embed(message, task="query")
+        if query_vector is None:
+            log.info("memory: embedding unavailable, falling back to keyword matching")
+            return await self._fallback.retrieve(message)
+
+        scored = [(cosine_similarity(query_vector, m.embedding), m) for m in pool if m.embedding]
+        scored = [pair for pair in scored if pair[0] >= SIMILARITY_FLOOR]
+        scored.sort(key=lambda pair: (-pair[0], -pair[1].importance, pair[1].updated_at))
+        selected = _cap(record for _, record in scored)
+        _log_used(selected, "embedding")
         return selected
 
 
@@ -143,6 +224,8 @@ def format_memories(memories: list[Memory]) -> list[str]:
     return [f"({m.category}) {m.content}" for m in memories]
 
 
-def get_retriever(db: sqlite3.Connection) -> MemoryRetriever:
-    """Swap the implementation here to change retrieval everywhere."""
-    return KeywordMemoryRetriever(MemoryService(db))
+def get_retriever(db: sqlite3.Connection, llm: LLMService) -> MemoryRetriever:
+    """Semantic retrieval backed by a keyword fallback. Swap the top-level
+    implementation here to change retrieval everywhere."""
+    keyword = KeywordMemoryRetriever(MemoryService(db))
+    return EmbeddingMemoryRetriever(MemoryService(db), llm, fallback=keyword)

@@ -1,3 +1,5 @@
+import type { EventProposal } from "./calendar";
+
 export type MessageRole = "user" | "assistant" | "system";
 
 export interface Message {
@@ -10,6 +12,10 @@ export interface Message {
   streaming?: boolean;
   /** True for local-only notices that are not stored on the backend. */
   local?: boolean;
+  /** A calendar event awaiting confirmation, rendered as a card. */
+  proposal?: EventProposal;
+  /** Set once the user has confirmed or cancelled that proposal. */
+  proposalResolved?: boolean;
 }
 
 export interface Conversation {

@@ -5,5 +5,6 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health")
 def health() -> dict[str, str]:
-    """Liveness check used by the desktop app to confirm the backend is up."""
-    return {"status": "ok"}
+    """Liveness check. The desktop app also reads `app` to make sure the
+    server on this port is Dully's own and not some other program."""
+    return {"status": "ok", "app": "dully"}

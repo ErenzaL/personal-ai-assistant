@@ -11,6 +11,10 @@ export interface AvatarProps {
   onClick?: () => void;
   /** Accessible label for the click action, e.g. "Open chat". */
   actionLabel?: string;
+  /** Brief hop, used when a reminder fires. */
+  bounce?: boolean;
+  /** Small dot on the shoulder while a reminder is waiting. */
+  badge?: boolean;
 }
 
 /**
@@ -18,16 +22,17 @@ export interface AvatarProps {
  * be clicked and reached by keyboard. Presentation only: no state, no
  * animation of body parts.
  */
-export function Avatar({ src, alt, size = 180, onClick, actionLabel }: AvatarProps) {
+export function Avatar({ src, alt, size = 180, onClick, actionLabel, bounce = false, badge = false }: AvatarProps) {
   return (
     <button
       type="button"
-      className="avatar"
+      className={bounce ? "avatar avatar--bounce" : "avatar"}
       style={{ width: size }}
       onClick={onClick}
       aria-label={actionLabel ?? alt}
     >
       <img className="avatar__image" src={src} alt={alt} draggable={false} />
+      {badge && <span className="avatar__badge" aria-hidden="true" />}
     </button>
   );
 }

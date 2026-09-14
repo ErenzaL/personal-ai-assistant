@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError
@@ -40,6 +41,13 @@ class ToolOutcome:
             body["error"] = self.error
         return json.dumps(body, ensure_ascii=False, indent=None)
 
+    def to_text(self) -> str:
+        """The outcome as an indented note, for the prompt. Plain text on
+        purpose: presented as JSON, Gemini 3.5 mistakes a tool result for one
+        of its own function calls and echoes it instead of answering."""
+        body = {"ok": self.ok, "data" if self.ok else "error": self.data if self.ok else self.error}
+        return render_text(body)
+
     @staticmethod
     def success(tool: str, **data: Any) -> "ToolOutcome":
         return ToolOutcome(True, tool, data=data)
@@ -49,12 +57,73 @@ class ToolOutcome:
         return ToolOutcome(False, tool, error={"code": code, "message": message, **extra})
 
 
+def render_text(value: Any, indent: int = 0) -> str:
+    """Nested dicts and lists as indented `key: value` lines, YAML-like but
+    without quoting rules. Empty containers render as `(none)` so an empty
+    result is visibly empty rather than missing."""
+    pad = "  " * indent
+    if isinstance(value, dict):
+        if not value:
+            return f"{pad}(none)"
+        lines = []
+        for key, item in value.items():
+            if isinstance(item, (dict, list)) and item:
+                lines.append(f"{pad}{key}:")
+                lines.append(render_text(item, indent + 1))
+            else:
+                lines.append(f"{pad}{key}: {_scalar(item)}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        if not value:
+            return f"{pad}(none)"
+        lines = []
+        for item in value:
+            if isinstance(item, dict) and item:
+                nested = render_text(item, indent + 1).splitlines()
+                first = nested[0].strip()
+                lines.append(f"{pad}- {first}")
+                lines.extend(nested[1:])
+            else:
+                lines.append(f"{pad}- {_scalar(item)}")
+        return "\n".join(lines)
+    return f"{pad}{_scalar(value)}"
+
+
+def _scalar(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (dict, list)):
+        return "(none)"
+    return str(value)
+
+
+def render_outcome(body: dict[str, Any]) -> str:
+    """A client-side outcome (same envelope) as the same kind of note."""
+    return render_text({k: v for k, v in body.items() if k != "tool"})
+
+
+class Execution(Enum):
+    """Where a tool runs. Calendar access lives in the native layer, so those
+    tools are dispatched to the desktop client and their result is posted
+    back; everything else runs here."""
+
+    LOCAL = "local"
+    CLIENT = "client"
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
     description: str
     args_model: type[BaseModel]
-    handler: Callable[[Any], ToolOutcome]
+    handler: Callable[[Any], ToolOutcome] | None = None
+    execution: Execution = Execution.LOCAL
+
+    @property
+    def runs_on_client(self) -> bool:
+        return self.execution is Execution.CLIENT
 
     def signature(self) -> str:
         """Compact call signature derived from the argument model."""
@@ -91,6 +160,29 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def get(self, name: str) -> ToolSpec | None:
+        return self._tools.get(name)
+
+    def runs_on_client(self, name: str) -> bool:
+        tool = self._tools.get(name)
+        return tool is not None and tool.runs_on_client
+
+    def validate(self, name: str, arguments: dict[str, Any]) -> dict[str, Any] | ToolOutcome:
+        """Check arguments without running anything. Used before handing a
+        client-side tool to the desktop app, so bad model output is caught
+        here rather than there."""
+        tool = self._tools.get(name)
+        if tool is None:
+            return ToolOutcome.failure(name, "unknown_tool", f"There is no tool called {name}.")
+        try:
+            return tool.args_model.model_validate(arguments or {}).model_dump()
+        except ValidationError as err:
+            fields = sorted({str(e["loc"][0]) for e in err.errors() if e.get("loc")})
+            log.info("tool %s: invalid arguments (%s)", name, ", ".join(fields) or "unknown")
+            return ToolOutcome.failure(
+                name, "invalid_arguments", "Those arguments are not valid for this tool.", fields=fields
+            )
+
     def catalogue(self) -> str:
         """Signatures and descriptions, for the selection prompt."""
         return "\n".join(f"- {t.signature()}\n    {t.description}" for t in self._tools.values())
@@ -105,6 +197,9 @@ class ToolRegistry:
         if tool is None:
             log.warning("tool %s: unknown", name)
             return ToolOutcome.failure(name, "unknown_tool", f"There is no tool called {name}.")
+        if tool.handler is None:
+            log.warning("tool %s: has no server-side handler", name)
+            return ToolOutcome.failure(name, "tool_failed", "That tool cannot run here.")
 
         try:
             args = tool.args_model.model_validate(arguments or {})

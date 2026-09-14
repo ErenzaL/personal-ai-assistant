@@ -1,6 +1,7 @@
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.api.schemas import ConversationOut, ConversationWithMessages, MessageOut
 from app.database import get_db
@@ -41,3 +42,13 @@ def get_conversation(conversation_id: str, db: sqlite3.Connection = Depends(get_
         conversation=ConversationOut.from_model(conversation),
         messages=[MessageOut.from_model(m) for m in service.messages(conversation.id)],
     )
+
+
+class ClearedCount(BaseModel):
+    deleted: int
+
+
+@router.delete("", response_model=ClearedCount)
+def clear_conversations(db: sqlite3.Connection = Depends(get_db)) -> ClearedCount:
+    """Remove every conversation and message. The UI confirms first."""
+    return ClearedCount(deleted=ConversationService(db).clear_all())

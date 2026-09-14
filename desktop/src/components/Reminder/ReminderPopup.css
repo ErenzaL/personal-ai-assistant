@@ -1,0 +1,70 @@
+/* Must fit the 118 px the Reminder window mode leaves above the mascot box. */
+.reminder {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 118px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  color: #1f1f1f;
+  font-size: 13px;
+}
+
+.reminder__kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #c9647f;
+}
+
+.reminder__title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.reminder__time {
+  font-size: 12px;
+  color: #6b6b6b;
+}
+
+.reminder__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.reminder__button {
+  flex: 1;
+  padding: 5px 0;
+  border: 1px solid rgba(232, 138, 164, 0.6);
+  border-radius: 8px;
+  background: #fdf1f4;
+  color: #8d3d55;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reminder__button:hover {
+  background: #f9dfe6;
+}
+
+.reminder__button--quiet {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: #f4f4f4;
+  color: #444;
+}
+
+.reminder__button--quiet:hover {
+  background: #eaeaea;
+}

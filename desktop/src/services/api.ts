@@ -2,7 +2,25 @@
  * HTTP client for the FastAPI backend. Components never build URLs or call
  * `fetch` directly; they use the typed functions at the bottom of this file.
  */
+import { invoke } from "@tauri-apps/api/core";
 import { API_BASE_URL, API_TIMEOUT_MS } from "../config";
+
+let baseUrl: Promise<string> | null = null;
+
+/**
+ * Where the backend answers. The desktop app starts the backend itself and
+ * moves to another port if 8000 is taken, so ask it once; outside Tauri
+ * (a plain browser tab) fall back to the configured default.
+ */
+function apiBase(): Promise<string> {
+  if (!baseUrl) {
+    baseUrl =
+      "__TAURI_INTERNALS__" in window
+        ? invoke<string>("backend_url").catch(() => API_BASE_URL)
+        : Promise.resolve(API_BASE_URL);
+  }
+  return baseUrl;
+}
 
 export type ApiErrorKind =
   | "offline" // could not connect at all
@@ -39,7 +57,7 @@ export function describeApiError(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.kind) {
       case "offline":
-        return `Can't reach the backend at ${API_BASE_URL}. Is it running?`;
+        return "Dully's local service isn't answering. It starts with the app; give it a moment or restart Dully.";
       case "timeout":
         return "The backend took too long to respond.";
       case "http":
@@ -87,7 +105,7 @@ async function send(path: string, init: SendInit = {}): Promise<Response> {
   init.signal?.addEventListener("abort", onOuterAbort);
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${await apiBase()}${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...init.headers },
       signal: controller.signal,
@@ -103,6 +121,9 @@ async function send(path: string, init: SendInit = {}): Promise<Response> {
     return response;
   } catch (error) {
     if (error instanceof ApiError) throw error;
+    // Nothing answered: the backend may have moved to another port (the app
+    // restarts it if it goes away), so ask the app again next time.
+    baseUrl = null;
     // fetch rejects (rather than resolving with a status) when the server is
     // unreachable, the connection is refused, CORS blocks it, or we aborted.
     if (init.signal?.aborted) throw new ApiError("aborted", "cancelled");
@@ -203,6 +224,10 @@ export interface AssistantSettingsDto {
   assistant_name: string;
   response_style: string;
   available_styles: string[];
+  default_calendar_id: string | null;
+  reminder_minutes: number;
+  calendar_notifications: boolean;
+  edge_activation: boolean;
 }
 
 // --- Endpoints ---------------------------------------------------------------
@@ -227,8 +252,18 @@ export function getCurrentConversation(): Promise<ConversationWithMessagesDto> {
 }
 
 /** Start a fresh conversation; it becomes the current one. */
+/** Delete every conversation and message. The settings panel confirms first. */
+export function clearConversations(): Promise<{ deleted: number }> {
+  return request<{ deleted: number }>("/conversations", { method: "DELETE" });
+}
+
 export function createConversation(): Promise<ConversationDto> {
   return request<ConversationDto>("/conversations", { method: "POST" });
+}
+
+export interface ChatToolResult {
+  name: string;
+  result: Record<string, unknown>;
 }
 
 export interface ChatTurnRequest {
@@ -236,7 +271,14 @@ export interface ChatTurnRequest {
   conversationId: string;
   /** On retry: the already-saved user message, so the backend doesn't save it twice. */
   userMessageId?: string;
+  /** Second pass: outcomes of tools this app ran on the backend's behalf. */
+  toolResults?: ChatToolResult[];
 }
+
+/** Either the reply finished, or the backend needs a tool run locally first. */
+export type StreamResult =
+  | { kind: "answer"; assistantMessageId: string }
+  | { kind: "client_tool"; name: string; arguments: Record<string, unknown> };
 
 export interface StreamMeta {
   conversationId: string;
@@ -253,29 +295,38 @@ export interface StreamOptions {
 }
 
 /**
- * Stream one reply. Resolves with the saved assistant message id when the
- * server sends `done`. Rejects with an `ApiError` whose kind says what
- * happened; any text already delivered via `onDelta` stays valid.
+ * Stream one reply.
+ *
+ * Resolves with `answer` when the server sends `done`, or with `client_tool`
+ * when it needs this app to run a tool natively -- call again with
+ * `toolResults` to get the reply. Rejects with an `ApiError` whose kind says
+ * what happened; any text already delivered via `onDelta` stays valid.
  */
 export async function streamChatMessage(
   turn: ChatTurnRequest,
   { onMeta, onDelta, signal }: StreamOptions,
-): Promise<{ assistantMessageId: string }> {
+): Promise<StreamResult> {
   const response = await send("/chat/stream", {
     method: "POST",
     body: JSON.stringify({
       message: turn.message,
       conversation_id: turn.conversationId,
       user_message_id: turn.userMessageId ?? null,
+      tool_results: (turn.toolResults ?? []).map((t) => ({ name: t.name, result: t.result })),
     }),
     signal,
   });
   if (!response.body) throw new ApiError("invalid", "no response body");
 
   let assistantMessageId: string | null = null;
+  let clientTool: { name: string; arguments: Record<string, unknown> } | null = null;
   try {
     for await (const { event, data } of readSse(response.body)) {
-      if (event === "delta") {
+      if (event === "client_tool") {
+        const t = JSON.parse(data) as { name: string; arguments?: Record<string, unknown> };
+        clientTool = { name: t.name, arguments: t.arguments ?? {} };
+        break;
+      } else if (event === "delta") {
         const { text } = JSON.parse(data) as { text?: unknown };
         if (typeof text === "string" && text) onDelta(text);
       } else if (event === "meta") {
@@ -292,14 +343,18 @@ export async function streamChatMessage(
     }
   } catch (error) {
     if (error instanceof ApiError) throw error;
+    // Nothing answered: the backend may have moved to another port (the app
+    // restarts it if it goes away), so ask the app again next time.
+    baseUrl = null;
     if (signal?.aborted) throw new ApiError("aborted", "cancelled");
     throw new ApiError("interrupted", "stream interrupted");
   }
+  if (clientTool) return { kind: "client_tool", ...clientTool };
   if (assistantMessageId === null) {
     if (signal?.aborted) throw new ApiError("aborted", "cancelled");
     throw new ApiError("interrupted", "stream ended early");
   }
-  return { assistantMessageId };
+  return { kind: "answer", assistantMessageId };
 }
 
 // --- Personal memory ----------------------------------------------------------
@@ -339,9 +394,14 @@ export function getAssistantSettings(): Promise<AssistantSettingsDto> {
   return request<AssistantSettingsDto>("/settings");
 }
 
-export function updateAssistantSettings(
-  patch: { assistant_name?: string; response_style?: string },
-): Promise<AssistantSettingsDto> {
+export function updateAssistantSettings(patch: {
+  assistant_name?: string;
+  response_style?: string;
+  default_calendar_id?: string;
+  reminder_minutes?: number;
+  calendar_notifications?: boolean;
+  edge_activation?: boolean;
+}): Promise<AssistantSettingsDto> {
   return request<AssistantSettingsDto>("/settings", {
     method: "PATCH",
     body: JSON.stringify(patch),

@@ -1,9 +1,11 @@
 //! Placement, sizing, and hit-testing of the floating mascot window.
 //!
-//! The window has two modes that share one bottom-right anchor:
-//! - `Mascot`: a small square holding only the mascot.
-//! - `Chat`:   a taller window with the chat panel above the mascot. The mascot
-//!   keeps the same on-screen spot because the anchor is the bottom-right corner.
+//! The window has three modes that share one bottom-right anchor:
+//! - `Mascot`:   a small square holding only the mascot.
+//! - `Chat`:     a taller window with the chat panel above the mascot.
+//! - `Reminder`: just tall enough for the reminder popup above the mascot.
+//! The mascot keeps the same on-screen spot because the anchor is the
+//! bottom-right corner.
 
 use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, WebviewWindow};
 
@@ -30,10 +32,18 @@ const CHAT_SIZE: LogicalSize<f64> = LogicalSize {
     height: 740.0,
 };
 
+/// Window size with the reminder popup above the mascot: 118 px for the card
+/// plus its 12 px top padding, on top of the 170 px mascot box.
+const REMINDER_SIZE: LogicalSize<f64> = LogicalSize {
+    width: 320.0,
+    height: 300.0,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Mascot,
     Chat,
+    Reminder,
 }
 
 impl Mode {
@@ -41,6 +51,7 @@ impl Mode {
         match self {
             Mode::Mascot => MASCOT_SIZE,
             Mode::Chat => CHAT_SIZE,
+            Mode::Reminder => REMINDER_SIZE,
         }
     }
 }
@@ -55,20 +66,19 @@ pub fn set_mode(window: &WebviewWindow, mode: Mode) -> tauri::Result<()> {
     let logical = mode.size();
     let physical: PhysicalSize<u32> = logical.to_physical(window.scale_factor()?);
     let position = resting_position_for(window, physical)?;
+    let current = window.inner_size()?;
+    let growing = physical.height > current.height || physical.width > current.width;
 
-    match mode {
-        Mode::Chat => {
-            if let Some(position) = position {
-                window.set_position(position)?;
-            }
-            window.set_size(logical)
+    if growing {
+        if let Some(position) = position {
+            window.set_position(position)?;
         }
-        Mode::Mascot => {
-            window.set_size(logical)?;
-            match position {
-                Some(position) => window.set_position(position),
-                None => Ok(()),
-            }
+        window.set_size(logical)
+    } else {
+        window.set_size(logical)?;
+        match position {
+            Some(position) => window.set_position(position),
+            None => Ok(()),
         }
     }
 }
