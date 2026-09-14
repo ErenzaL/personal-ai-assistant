@@ -1,0 +1,48 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+
+  /* Transparent padding around content so hover lifts and shadows are not clipped. */
+  --window-padding: 12px;
+
+  /* Must match MASCOT_SIZE in src-tauri/src/mascot_window.rs. */
+  --mascot-box: 170px;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+/*
+ * Layout is a column: [chat panel (optional)] over [mascot box].
+ * The mascot box is always the same size and hugs the bottom-right corner,
+ * which is the corner the native window is anchored on. That keeps the mascot
+ * in the same screen position whether or not the panel is open.
+ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  user-select: none;
+}
+
+.app__chat {
+  flex: 1;
+  min-height: 0;
+  padding: var(--window-padding) var(--window-padding) 0;
+  user-select: text;
+}
+
+.app__mascot {
+  flex: none;
+  box-sizing: border-box;
+  width: var(--mascot-box);
+  height: var(--mascot-box);
+  padding: var(--window-padding);
+  margin-left: auto;
+}

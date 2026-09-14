@@ -1,0 +1,35 @@
+.chat-window {
+  --chat-bg: #ffffff;
+  --chat-border: rgba(0, 0, 0, 0.08);
+  --chat-text: #1a1a1a;
+  --chat-muted: #6b6f76;
+  --chat-accent: #e88aa4; /* matches the mascot's blazer */
+  --chat-accent-text: #ffffff;
+  --chat-bubble-assistant: #f2f3f5;
+  --chat-radius: 18px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--chat-text);
+  background: var(--chat-bg);
+  border: 1px solid var(--chat-border);
+  border-radius: var(--chat-radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* Small notch under the panel pointing at the mascot's head. */
+.chat-window__tail {
+  position: absolute;
+  right: 77px; /* mascot box is 170px wide; its center is 85px from the right */
+  bottom: -8px;
+  width: 16px;
+  height: 16px;
+  background: var(--chat-bg);
+  border-right: 1px solid var(--chat-border);
+  border-bottom: 1px solid var(--chat-border);
+  transform: rotate(45deg);
+}

@@ -1,0 +1,70 @@
+.message-list {
+  flex: 1;
+  min-height: 0; /* lets the flex child shrink so overflow can scroll */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 6px;
+  overscroll-behavior: contain;
+}
+
+.message-list__typing {
+  display: inline-flex;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: var(--chat-bubble-assistant);
+}
+
+.message-list__typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--chat-muted);
+  animation: typing 1s infinite ease-in-out;
+}
+
+.message-list__typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.message-list__typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.message-list__retry {
+  align-self: center;
+  padding: 5px 14px;
+  border: 1px solid var(--chat-border);
+  border-radius: 999px;
+  background: var(--chat-bg);
+  color: var(--chat-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.message-list__retry:hover {
+  background: var(--chat-bubble-assistant);
+}
+
+.message-list__empty {
+  margin: auto;
+  padding: 0 24px;
+  color: var(--chat-muted);
+  font-size: 13px;
+  text-align: center;
+}

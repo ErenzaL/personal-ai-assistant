@@ -1,0 +1,210 @@
+.settings-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 16px;
+  overscroll-behavior: contain;
+  font-size: 13px;
+}
+
+.settings-section + .settings-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--chat-border);
+}
+
+.settings-section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settings-section__title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--chat-muted);
+}
+
+.settings-section__footer {
+  margin-top: 10px;
+}
+
+.settings-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--chat-muted);
+}
+
+/* Small text buttons used throughout the panel. */
+.settings-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--chat-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-link:hover {
+  color: var(--chat-text);
+  text-decoration: underline;
+}
+
+.settings-link--danger:hover {
+  color: #b3261e;
+}
+
+.settings-button {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--chat-accent);
+  color: var(--chat-accent-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-empty {
+  margin: 4px 0;
+  color: var(--chat-muted);
+  font-size: 12px;
+}
+
+.settings-error {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px solid #f3c9c9;
+  border-radius: 8px;
+  background: #fff4f4;
+  color: #8a2b2b;
+  font-size: 12px;
+}
+
+/* --- memory list ------------------------------------------------------------ */
+
+.memory-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memory-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.memory-row:last-child {
+  border-bottom: 0;
+}
+
+.memory-row__category {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--chat-bubble-assistant);
+  color: var(--chat-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.memory-row__content {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.memory-row__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+/* Row actions stay discoverable but quiet, and come forward on hover. */
+.memory-row__actions .settings-link {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.memory-row:hover .settings-link,
+.memory-row:focus-within .settings-link {
+  opacity: 1;
+}
+
+/* --- add / edit form -------------------------------------------------------- */
+
+.memory-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.memory-form__category {
+  flex: none;
+}
+
+.memory-form__input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.memory-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memory-form__category,
+.memory-form__input,
+.settings-field__input {
+  padding: 4px 8px;
+  border: 1px solid var(--chat-border);
+  border-radius: 8px;
+  background: var(--chat-bg);
+  color: var(--chat-text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.memory-form__input:focus,
+.settings-field__input:focus {
+  border-color: var(--chat-accent);
+}
+
+/* --- assistant fields ------------------------------------------------------- */
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.settings-field__label {
+  color: var(--chat-muted);
+}
+
+.settings-field__input {
+  width: 160px;
+}

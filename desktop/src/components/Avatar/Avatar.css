@@ -1,0 +1,36 @@
+.avatar {
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  line-height: 0;
+  cursor: pointer;
+  transition: transform 180ms ease-out;
+  will-change: transform;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.avatar:hover {
+  transform: translateY(-6px) scale(1.05);
+}
+
+.avatar:active {
+  transform: translateY(-3px) scale(1.02);
+}
+
+.avatar:focus-visible {
+  outline: 2px solid rgba(232, 138, 164, 0.9);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.avatar__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none; /* clicks land on the button */
+}
