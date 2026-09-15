@@ -17,6 +17,7 @@ const FALLBACK: AssistantSettings = {
   reminderMinutes: 10,
   calendarNotifications: true,
   edgeActivation: true,
+  memoryEnabled: true,
 };
 
 function fromDto(dto: AssistantSettingsDto): AssistantSettings {
@@ -28,6 +29,7 @@ function fromDto(dto: AssistantSettingsDto): AssistantSettings {
     reminderMinutes: dto.reminder_minutes,
     calendarNotifications: dto.calendar_notifications,
     edgeActivation: dto.edge_activation,
+    memoryEnabled: dto.memory_enabled,
   };
 }
 
@@ -73,6 +75,7 @@ export function useSettings() {
           reminder_minutes: patch.reminderMinutes,
           calendar_notifications: patch.calendarNotifications,
           edge_activation: patch.edgeActivation,
+          memory_enabled: patch.memoryEnabled,
         }),
       );
       if (!mounted.current) return;

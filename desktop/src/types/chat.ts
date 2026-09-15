@@ -16,6 +16,10 @@ export interface Message {
   proposal?: EventProposal;
   /** Set once the user has confirmed or cancelled that proposal. */
   proposalResolved?: boolean;
+  /** This message's whole text is a Gmail reply draft: rendered as a
+   *  labelled draft card with a Copy button instead of a plain bubble.
+   *  Never sent, never saved to Gmail -- copy-and-send-yourself only. */
+  isDraft?: boolean;
 }
 
 export interface Conversation {

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 import { MessageBubble } from "./MessageBubble";
 import { EventProposalCard } from "./EventProposalCard";
+import { DraftEmailCard } from "./DraftEmailCard";
 import type { Message } from "../../types/chat";
 import "./MessageList.css";
 
@@ -62,7 +63,14 @@ export function MessageList({
       {messages.length === 0 && emptyHint && <p className="message-list__empty">{emptyHint}</p>}
       {messages.map((message) => (
         <Fragment key={message.id}>
-          {message.text.trim() && <MessageBubble message={message} />}
+          {message.isDraft ? (
+            // The whole reply *is* the draft -- shown only as the card, no
+            // plain bubble alongside it (the identity prompt has the model
+            // write nothing else when this fires).
+            <DraftEmailCard message={message} />
+          ) : (
+            message.text.trim() && <MessageBubble message={message} />
+          )}
           {message.proposal && (
             <EventProposalCard
               proposal={message.proposal}

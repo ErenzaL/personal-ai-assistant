@@ -1,157 +1,37 @@
-import { useState } from "react";
-import { CATEGORY_LABEL, MEMORY_CATEGORIES, type MemoryCategory, type MemoryItem } from "../../types/settings";
+import { Toggle } from "./Toggle";
 
 export interface MemorySectionProps {
-  items: MemoryItem[];
-  isLoading: boolean;
-  onAdd: (category: MemoryCategory, content: string) => Promise<boolean>;
-  onEdit: (id: string, content: string) => Promise<boolean>;
-  onForget: (id: string) => Promise<boolean>;
+  enabled: boolean;
+  onChangeEnabled: (enabled: boolean) => void;
+  itemCount: number;
+  onOpenReview: () => void;
 }
 
 /**
- * Compact list of what the assistant remembers, with add / edit / forget.
- * Only the category and the wording are shown; keys, ids, confidence and
- * source stay internal. Forgetting deactivates a memory, it does not delete
- * the row, and forgetting everything asks first.
+ * What Settings shows about memory: one switch, and a link to the review
+ * list. Nothing is created here -- memories are learned automatically from
+ * conversation (see `memory_extraction.py`); this is where the user turns
+ * that off, or goes to see, edit, or forget what was kept.
  */
-export function MemorySection({ items, isLoading, onAdd, onEdit, onForget }: MemorySectionProps) {
-  const [adding, setAdding] = useState(false);
-  const [draftCategory, setDraftCategory] = useState<MemoryCategory>("preference");
-  const [draftContent, setDraftContent] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editContent, setEditContent] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const resetAdd = () => {
-    setAdding(false);
-    setDraftContent("");
-  };
-
-  const submitAdd = async () => {
-    if (!draftContent.trim() || busy) return;
-    setBusy(true);
-    const ok = await onAdd(draftCategory, draftContent.trim());
-    setBusy(false);
-    if (ok) resetAdd();
-  };
-
-  const submitEdit = async () => {
-    if (!editingId || !editContent.trim() || busy) return;
-    setBusy(true);
-    const ok = await onEdit(editingId, editContent.trim());
-    setBusy(false);
-    if (ok) setEditingId(null);
-  };
-
-
+export function MemorySection({ enabled, onChangeEnabled, itemCount, onOpenReview }: MemorySectionProps) {
   return (
     <section className="settings-section">
       <div className="settings-section__head">
-        <h3 className="settings-section__title">Personal memory</h3>
-        {!adding && (
-          <button type="button" className="settings-link" onClick={() => setAdding(true)}>
-            + Add
-          </button>
-        )}
+        <h3 className="settings-section__title">Memory</h3>
       </div>
-
-      {adding && (
-        <div className="memory-form">
-          <select
-            className="memory-form__category"
-            value={draftCategory}
-            onChange={(event) => setDraftCategory(event.target.value as MemoryCategory)}
-            aria-label="Category"
-          >
-            {MEMORY_CATEGORIES.map((category) => (
-              <option key={category} value={category}>
-                {CATEGORY_LABEL[category]}
-              </option>
-            ))}
-          </select>
-          <input
-            className="memory-form__input"
-            value={draftContent}
-            onChange={(event) => setDraftContent(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void submitAdd();
-              if (event.key === "Escape") resetAdd();
-            }}
-            placeholder="Prefers meetings after 2 PM"
-            aria-label="What to remember"
-            autoFocus
-          />
-          <div className="memory-form__actions">
-            <button type="button" className="settings-button" onClick={() => void submitAdd()} disabled={busy}>
-              Save
-            </button>
-            <button type="button" className="settings-link" onClick={resetAdd}>
-              Cancel
-            </button>
-          </div>
-        </div>
+      <Toggle label="Remember useful things from conversations" checked={enabled} onChange={onChangeEnabled} />
+      {!enabled && (
+        <p className="settings-hint">
+          Nothing new will be learned. What's already saved stays, and is still used to answer.
+        </p>
       )}
-
-      {isLoading && items.length === 0 && <p className="settings-empty">Loading…</p>}
-      {!isLoading && items.length === 0 && !adding && (
-        <p className="settings-empty">Nothing saved yet. Add something, or say “Remember that…” in chat.</p>
-      )}
-
-      <ul className="memory-list">
-        {items.map((item) => (
-          <li key={item.id} className="memory-row">
-            <span className="memory-row__category">{CATEGORY_LABEL[item.category]}</span>
-            {editingId === item.id ? (
-              <>
-                <input
-                  className="memory-form__input"
-                  value={editContent}
-                  onChange={(event) => setEditContent(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void submitEdit();
-                    if (event.key === "Escape") setEditingId(null);
-                  }}
-                  aria-label="Edit memory"
-                  autoFocus
-                />
-                <div className="memory-row__actions">
-                  <button type="button" className="settings-link" onClick={() => void submitEdit()} disabled={busy}>
-                    Save
-                  </button>
-                  <button type="button" className="settings-link" onClick={() => setEditingId(null)}>
-                    Cancel
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <span className="memory-row__content">{item.content}</span>
-                <div className="memory-row__actions">
-                  <button
-                    type="button"
-                    className="settings-link"
-                    onClick={() => {
-                      setEditingId(item.id);
-                      setEditContent(item.content);
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-link settings-link--danger"
-                    onClick={() => void onForget(item.id)}
-                  >
-                    Forget
-                  </button>
-                </div>
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
-
+      <button type="button" className="settings-row-link" onClick={onOpenReview}>
+        <span>What the assistant remembers</span>
+        <span className="settings-row-link__meta">
+          {itemCount > 0 ? itemCount : ""}
+          <span aria-hidden="true">›</span>
+        </span>
+      </button>
     </section>
   );
 }

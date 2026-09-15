@@ -92,15 +92,18 @@ async function readErrorDetail(response: Response): Promise<{ code?: string; mes
   return {};
 }
 
-type SendInit = Omit<RequestInit, "signal"> & { signal?: AbortSignal };
+type SendInit = Omit<RequestInit, "signal"> & { signal?: AbortSignal; timeoutMs?: number };
 
 /**
  * `fetch` with connection-level error mapping and a timeout that covers the
  * wait for response headers only. Body streaming is the caller's business.
+ * `timeoutMs` overrides the default for one call -- Gmail's connect request
+ * blocks in the browser for as long as the backend's own OAuth window, far
+ * longer than an ordinary request should ever wait.
  */
 async function send(path: string, init: SendInit = {}): Promise<Response> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timer = window.setTimeout(() => controller.abort(), init.timeoutMs ?? API_TIMEOUT_MS);
   const onOuterAbort = () => controller.abort();
   init.signal?.addEventListener("abort", onOuterAbort);
 
@@ -228,6 +231,7 @@ export interface AssistantSettingsDto {
   reminder_minutes: number;
   calendar_notifications: boolean;
   edge_activation: boolean;
+  memory_enabled: boolean;
 }
 
 // --- Endpoints ---------------------------------------------------------------
@@ -277,7 +281,7 @@ export interface ChatTurnRequest {
 
 /** Either the reply finished, or the backend needs a tool run locally first. */
 export type StreamResult =
-  | { kind: "answer"; assistantMessageId: string }
+  | { kind: "answer"; assistantMessageId: string; memorySaved: string | null; isDraft: boolean }
   | { kind: "client_tool"; name: string; arguments: Record<string, unknown> };
 
 export interface StreamMeta {
@@ -319,6 +323,8 @@ export async function streamChatMessage(
   if (!response.body) throw new ApiError("invalid", "no response body");
 
   let assistantMessageId: string | null = null;
+  let memorySaved: string | null = null;
+  let isDraft = false;
   let clientTool: { name: string; arguments: Record<string, unknown> } | null = null;
   try {
     for await (const { event, data } of readSse(response.body)) {
@@ -333,8 +339,14 @@ export async function streamChatMessage(
         const m = JSON.parse(data) as { conversation_id: string; user_message_id: string };
         onMeta?.({ conversationId: m.conversation_id, userMessageId: m.user_message_id });
       } else if (event === "done") {
-        const d = JSON.parse(data) as { assistant_message_id?: string };
+        const d = JSON.parse(data) as {
+          assistant_message_id?: string;
+          memory_saved?: string | null;
+          is_draft?: boolean;
+        };
         assistantMessageId = d.assistant_message_id ?? "";
+        memorySaved = typeof d.memory_saved === "string" ? d.memory_saved : null;
+        isDraft = d.is_draft === true;
         break;
       } else if (event === "error") {
         const { code, message: serverMessage } = JSON.parse(data) as { code?: string; message?: string };
@@ -354,7 +366,7 @@ export async function streamChatMessage(
     if (signal?.aborted) throw new ApiError("aborted", "cancelled");
     throw new ApiError("interrupted", "stream ended early");
   }
-  return { kind: "answer", assistantMessageId };
+  return { kind: "answer", assistantMessageId, memorySaved, isDraft };
 }
 
 // --- Personal memory ----------------------------------------------------------
@@ -401,9 +413,42 @@ export function updateAssistantSettings(patch: {
   reminder_minutes?: number;
   calendar_notifications?: boolean;
   edge_activation?: boolean;
+  memory_enabled?: boolean;
 }): Promise<AssistantSettingsDto> {
   return request<AssistantSettingsDto>("/settings", {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
+}
+
+// --- Gmail ---------------------------------------------------------------------
+// Read-only connection only: no message content ever passes through this
+// client, and no token or credential ever appears in a response body.
+
+export interface GmailStatusDto {
+  connected: boolean;
+  /** Set only when there is something more useful to say than "not
+   *  connected" -- currently just a refresh that couldn't reach Google. */
+  detail: string | null;
+}
+
+/** Never rejects with the connect-only errors below; those come from
+ *  `connectGmail` instead, since a plain status check can't hit them. */
+export function getGmailStatus(): Promise<GmailStatusDto> {
+  return request<GmailStatusDto>("/gmail/status");
+}
+
+/**
+ * Opens the user's browser for Google sign-in and waits for it to finish.
+ * Can legitimately take a couple of minutes (it's waiting on a person, not
+ * the network), so this uses a much longer timeout than an ordinary call --
+ * long enough that the backend's own OAuth window always expires first, so
+ * a real backend error is never masked by the frontend giving up early.
+ */
+export function connectGmail(): Promise<GmailStatusDto> {
+  return request<GmailStatusDto>("/gmail/connect", { method: "POST", timeoutMs: 185_000 });
+}
+
+export function disconnectGmail(): Promise<GmailStatusDto> {
+  return request<GmailStatusDto>("/gmail/disconnect", { method: "POST" });
 }

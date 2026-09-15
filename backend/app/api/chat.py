@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import sqlite3
@@ -13,7 +14,10 @@ from app.database import connect, get_db
 from app.services import memory_commands, tools
 from app.services.chat import ChatService, ConversationService, Turn
 from app.services.context import ToolResult
-from app.services.llm import LLMError, get_llm_service
+from app.services.llm import ChatMessage, LLMError, get_llm_service
+from app.services.memory import MemoryService
+from app.services.memory_extraction import extract as extract_memory
+from app.services.preferences import PreferencesService
 
 router = APIRouter(tags=["chat"])
 log = logging.getLogger("app.chat")
@@ -60,12 +64,22 @@ class ChatResponse(BaseModel):
     conversation_id: str
     user_message_id: str
     assistant_message_id: str
+    """Set when this message taught the assistant something new (or updated
+    an existing memory); the content to show as brief "Remembered: ..."
+    feedback. None the great majority of the time -- most messages contain
+    nothing durable to keep."""
+    memory_saved: str | None = None
+    """True when `answer` is a Gmail reply draft (nothing else): the desktop
+    app shows it as a labelled draft card with a Copy button instead of an
+    ordinary chat bubble. Never true for anything actually sent or saved --
+    this app cannot do either."""
+    is_draft: bool = False
 
 
-def _begin(request: ChatRequest, db: sqlite3.Connection) -> Turn:
+async def _begin(request: ChatRequest, db: sqlite3.Connection) -> Turn:
     service = ConversationService(db)
     conversation_id = request.conversation_id or service.current().id
-    turn = service.begin_turn(conversation_id, request.message, request.user_message_id)
+    turn = await service.begin_turn(conversation_id, request.message, request.user_message_id)
     if turn is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     return turn
@@ -106,6 +120,66 @@ class ClientToolRequest:
     arguments: dict[str, Any]
 
 
+# Holds strong references to detached extraction tasks so they are never
+# garbage-collected mid-flight (a known asyncio gotcha for a task nothing
+# awaits), and removes each once it finishes. This is the only place a
+# memory-extraction task is *not* awaited by the request that started it --
+# the case where the same message also needs a client-side tool, and the
+# request has to return before the tool's result comes back. See
+# `_spawn_extraction`.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_extraction(turn: Turn, db: sqlite3.Connection) -> "asyncio.Task[tuple[bool, str | None]] | None":
+    """Passive memory extraction for a freshly-received user message (see
+    `memory_extraction.py`), started as early as possible so it runs
+    concurrently with tool selection and answer generation rather than
+    adding to the visible reply time.
+
+    Never runs twice for the same message: `turn.is_new_message` is False on
+    a retry (reused message) and on the second pass of a client-tool round
+    trip, so this only ever fires once per thing the user actually typed.
+    Uses its own database connection, the same reason `_save_assistant`
+    does: on the client-tool path the request returns *before* this
+    finishes, so it must not depend on the request-scoped connection.
+    """
+    if not turn.is_new_message:
+        return None
+    if not PreferencesService(db).get().memory_enabled:
+        return None
+
+    history = list(turn.prompt.history)
+    text = turn.user_message.content
+    conversation_id = turn.conversation.id
+
+    async def run() -> tuple[bool, str | None]:
+        conn = connect(get_settings().database_path)
+        try:
+            result = await extract_memory(get_llm_service(), MemoryService(conn), text, history, conversation_id)
+            return result.saved, result.content
+        except Exception:
+            log.exception("memory extraction task failed")
+            return False, None
+        finally:
+            conn.close()
+
+    task = asyncio.create_task(run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def _collect_memory_saved(task: "asyncio.Task[tuple[bool, str | None]] | None") -> str | None:
+    """The content to show as "Remembered: ..." feedback, or None. Awaiting
+    a failed task here would surface its exception at the call site, but
+    `run()` above already turns every failure into `(False, None)`, so this
+    can never raise."""
+    if task is None:
+        return None
+    saved, content = await task
+    return content if saved else None
+
+
 def _attach(turn: Turn, db: sqlite3.Connection, results: list[tuple[str, str]]) -> Turn:
     return ConversationService.attach_tool_results(
         turn, [ToolResult(name, body) for name, body in results]
@@ -114,12 +188,20 @@ def _attach(turn: Turn, db: sqlite3.Connection, results: list[tuple[str, str]]) 
 
 async def _with_tools(
     request: ChatRequest, turn: Turn, db: sqlite3.Connection
-) -> tuple[Turn, ClientToolRequest | None]:
+) -> tuple[Turn, ClientToolRequest | None, bool]:
     """Tool phase, kept separate from answer generation.
 
-    Returns the turn to answer from, plus a tool for the client to run when
-    the selected tool needs native access. On the second pass the app posts
-    the result back and it is attached directly.
+    Returns the turn to answer from, a tool for the client to run when the
+    selected tool needs native access, and whether this turn's answer is a
+    Gmail draft reply (gmail.draft_reply was selected and it actually found
+    a source email) -- the desktop app renders those as a labelled "Draft
+    reply" card with a Copy button instead of an ordinary bubble, since the
+    whole answer *is* the reply text with nothing else added (see the
+    identity prompt's draft rule). False on an ambiguous/not-found/error
+    outcome: there, the answer is an ordinary clarifying or error message.
+    On the second pass the app posts a client tool's result back and it is
+    attached directly; that path is never a draft (draft_reply is never
+    client-executed).
     """
     # Second pass: the desktop app already ran the tool.
     if request.tool_results:
@@ -128,33 +210,39 @@ async def _with_tools(
             body = tools.summarise(item.result) if item.name == tools.CALENDAR_READ else item.result
             rendered.append((item.name, tools.render_outcome(body)))
             log.info("client tool %s: %s", item.name, "ok" if item.result.get("ok") else "failed")
-        return _attach(turn, db, rendered), None
+        return _attach(turn, db, rendered), None, False
 
     text = turn.user_message.content
     registry = tools.build_registry(db)
     call = await tools.select(get_llm_service(), registry, text, turn.prompt.history)
     if call is None:
-        return turn, None
+        return turn, None, False
 
     # Calendar tools run in the desktop app, not here.
     if registry.runs_on_client(call.name):
         checked = registry.validate(call.name, call.arguments)
         if isinstance(checked, tools.ToolOutcome):
-            return _attach(turn, db, [(call.name, checked.to_text())]), None
-        return turn, ClientToolRequest(call.name, checked)
+            return _attach(turn, db, [(call.name, checked.to_text())]), None, False
+        return turn, ClientToolRequest(call.name, checked), False
 
     outcome = registry.execute(call.name, call.arguments)
-    return _attach(turn, db, [(call.name, outcome.to_text())]), None
+    is_draft = call.name == tools.GMAIL_DRAFT_REPLY and outcome.ok
+    return _attach(turn, db, [(call.name, outcome.to_text())]), None, is_draft
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -> ChatResponse:
-    turn = _begin(request, db)
+    turn = await _begin(request, db)
+    memory_task = _spawn_extraction(turn, db)
+    is_draft = False
     try:
         answer = await _memory_reply(turn, db)
         if answer is None:
-            turn, client_tool = await _with_tools(request, turn, db)
+            turn, client_tool, is_draft = await _with_tools(request, turn, db)
             if client_tool is not None:
+                # The extraction task keeps running in the background (see
+                # `_background_tasks`); this response has no "done" moment
+                # to attach its feedback to, so it surfaces on the next call.
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -172,6 +260,8 @@ async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -
         conversation_id=turn.conversation.id,
         user_message_id=turn.user_message.id,
         assistant_message_id=assistant_id,
+        memory_saved=await _collect_memory_saved(memory_task),
+        is_draft=is_draft,
     )
 
 
@@ -198,20 +288,24 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -> StreamingResponse:
-    turn = _begin(request, db)
+    turn = await _begin(request, db)
+    memory_task = _spawn_extraction(turn, db)
     meta = _sse("meta", {"conversation_id": turn.conversation.id, "user_message_id": turn.user_message.id})
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
     client_tool: ClientToolRequest | None = None
+    is_draft = False
     try:
         command_reply = await _memory_reply(turn, db)
         if command_reply is None:
-            turn, client_tool = await _with_tools(request, turn, db)
+            turn, client_tool, is_draft = await _with_tools(request, turn, db)
     except LLMError as err:
         raise _http_error(err) from err
 
     # The desktop app has to run this one and post the result back; the reply
     # is written on that second request. Nothing is saved in the meantime.
+    # `memory_task` keeps running in the background (see `_spawn_extraction`)
+    # and its feedback, if any, surfaces whenever a "done" is next emitted.
     if client_tool is not None:
 
         async def tool_events() -> AsyncIterator[str]:
@@ -229,7 +323,11 @@ async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get
             yield meta
             yield _sse("delta", {"text": command_reply})
             assistant_id = _save_assistant(turn.conversation.id, command_reply)
-            yield _sse("done", {"assistant_message_id": assistant_id})
+            memory_saved = await _collect_memory_saved(memory_task)
+            done: dict[str, Any] = {"assistant_message_id": assistant_id}
+            if memory_saved:
+                done["memory_saved"] = memory_saved
+            yield _sse("done", done)
 
         return StreamingResponse(command_events(), media_type="text/event-stream", headers=headers)
 
@@ -253,7 +351,16 @@ async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get
                 parts.append(chunk)
                 yield _sse("delta", {"text": chunk})
             assistant_id = _save_assistant(turn.conversation.id, "".join(parts))
-            yield _sse("done", {"assistant_message_id": assistant_id})
+            # Extraction has been running concurrently with the whole reply
+            # above, so this rarely adds a visible wait: most of the time it
+            # finished well before the last token did.
+            memory_saved = await _collect_memory_saved(memory_task)
+            done: dict[str, Any] = {"assistant_message_id": assistant_id}
+            if memory_saved:
+                done["memory_saved"] = memory_saved
+            if is_draft:
+                done["is_draft"] = True
+            yield _sse("done", done)
         except LLMError as err:
             log.warning("chat stream failed: %s: %s", err.kind, err.message)
             yield _sse("error", {"code": err.kind, "message": err.message})

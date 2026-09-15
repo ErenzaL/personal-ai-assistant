@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  createMemory,
   describeApiError,
   forgetAllMemories,
   forgetMemory,
@@ -65,13 +64,11 @@ export function useMemories(enabled: boolean) {
     [reload],
   );
 
-  const add = useCallback(
-    (category: MemoryCategory, content: string) => run(() => createMemory(category, content)),
-    [run],
-  );
+  // No `add`: memories are learned automatically from conversation now
+  // (see `memory_extraction.py`), not typed in here. Review, edit, forget.
   const edit = useCallback((id: string, content: string) => run(() => updateMemory(id, content)), [run]);
   const forget = useCallback((id: string) => run(() => forgetMemory(id)), [run]);
   const forgetAll = useCallback(() => run(() => forgetAllMemories()), [run]);
 
-  return { items, isLoading, error, add, edit, forget, forgetAll, reload };
+  return { items, isLoading, error, edit, forget, forgetAll, reload };
 }

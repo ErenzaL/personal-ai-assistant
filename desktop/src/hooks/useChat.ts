@@ -67,6 +67,9 @@ export function useChat(defaultCalendarId: string | null = null) {
   const [isReplying, setIsReplying] = useState(false);
   const [status, setStatus] = useState<BackendStatus>("unknown");
   const [failed, setFailed] = useState<PendingTurn | null>(null);
+  /** The most recent "Remembered: ..." feedback, or null. A new value (even
+   *  a repeat of the same text) is a fresh event for `MemoryToast` to show. */
+  const [memoryNotice, setMemoryNotice] = useState<{ content: string; at: number } | null>(null);
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
 
@@ -120,6 +123,9 @@ export function useChat(defaultCalendarId: string | null = null) {
     // Attached to the assistant message once it finishes, so the card appears
     // under the sentence that introduces it.
     let pendingProposal: EventProposal | null = null;
+    // Same idea: the whole reply is a Gmail draft, shown with a Copy button
+    // instead of a plain bubble once we know (only at "done").
+    let isDraftReply = false;
     const finish = (finalId?: string) => {
       if (assistantId === null) return;
       const id = assistantId;
@@ -131,6 +137,7 @@ export function useChat(defaultCalendarId: string | null = null) {
                 id: finalId || m.id,
                 streaming: false,
                 ...(pendingProposal ? { proposal: pendingProposal } : {}),
+                ...(isDraftReply ? { isDraft: true } : {}),
               }
             : m,
         ),
@@ -241,8 +248,10 @@ export function useChat(defaultCalendarId: string | null = null) {
       if (outcome.kind !== "answer") {
         throw new ApiError("invalid", "the backend asked for a tool twice");
       }
+      isDraftReply = outcome.isDraft;
       finish(outcome.assistantMessageId);
       setStatus("online");
+      if (outcome.memorySaved) setMemoryNotice({ content: outcome.memorySaved, at: Date.now() });
     } catch (error) {
       if (!mounted.current) return;
       if (error instanceof ApiError && error.kind === "aborted") return;
@@ -358,5 +367,6 @@ export function useChat(defaultCalendarId: string | null = null) {
     newConversation,
     confirmProposal,
     cancelProposal,
+    memoryNotice,
   };
 }

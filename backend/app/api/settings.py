@@ -30,6 +30,7 @@ class SettingsOut(BaseModel):
     reminder_minutes: int
     calendar_notifications: bool
     edge_activation: bool
+    memory_enabled: bool
 
     @classmethod
     def from_model(cls, prefs: AssistantPreferences) -> "SettingsOut":
@@ -41,6 +42,7 @@ class SettingsOut(BaseModel):
             reminder_minutes=prefs.reminder_minutes,
             calendar_notifications=prefs.calendar_notifications,
             edge_activation=prefs.edge_activation,
+            memory_enabled=prefs.memory_enabled,
         )
 
 
@@ -52,6 +54,7 @@ class SettingsUpdate(BaseModel):
     reminder_minutes: int | None = Field(default=None, ge=REMINDER_MINUTES_MIN, le=REMINDER_MINUTES_MAX)
     calendar_notifications: bool | None = None
     edge_activation: bool | None = None
+    memory_enabled: bool | None = None
 
 
 @router.get("", response_model=SettingsOut)
@@ -69,6 +72,7 @@ def update_settings(body: SettingsUpdate, db: sqlite3.Connection = Depends(get_d
             reminder_minutes=body.reminder_minutes,
             calendar_notifications=body.calendar_notifications,
             edge_activation=body.edge_activation,
+            memory_enabled=body.memory_enabled,
         )
     except InvalidPreference as err:
         raise HTTPException(status_code=422, detail=err.message) from err

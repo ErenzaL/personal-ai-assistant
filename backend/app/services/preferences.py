@@ -19,6 +19,7 @@ DEFAULT_CALENDAR_KEY = "default_calendar_id"
 REMINDER_MINUTES_KEY = "reminder_minutes"
 CALENDAR_NOTIFICATIONS_KEY = "calendar_notifications"
 EDGE_ACTIVATION_KEY = "edge_activation"
+MEMORY_ENABLED_KEY = "memory_enabled"
 
 DEFAULT_NAME = DEFAULT_ASSISTANT_NAME
 NAME_MAX_LEN = 24
@@ -50,6 +51,10 @@ class AssistantPreferences:
     calendar_notifications: bool = True
     """Whether the mascot appears when the cursor touches the bottom-right edge."""
     edge_activation: bool = True
+    """Whether ordinary conversation is scanned for things worth remembering.
+    Off stops new memories being created; existing ones stay and are still
+    used to answer, and can still be reviewed, edited or forgotten."""
+    memory_enabled: bool = True
 
     @property
     def style_instruction(self) -> str:
@@ -73,6 +78,7 @@ class PreferencesService:
         minutes = self._settings.get(REMINDER_MINUTES_KEY, DEFAULT_REMINDER_MINUTES)
         notify = self._settings.get(CALENDAR_NOTIFICATIONS_KEY, True)
         edge = self._settings.get(EDGE_ACTIVATION_KEY, True)
+        memory_enabled = self._settings.get(MEMORY_ENABLED_KEY, True)
         return AssistantPreferences(
             assistant_name=name if isinstance(name, str) and name.strip() else DEFAULT_NAME,
             response_style=style if style in RESPONSE_STYLES else DEFAULT_STYLE,
@@ -80,6 +86,7 @@ class PreferencesService:
             reminder_minutes=minutes if _minutes_ok(minutes) else DEFAULT_REMINDER_MINUTES,
             calendar_notifications=notify if isinstance(notify, bool) else True,
             edge_activation=edge if isinstance(edge, bool) else True,
+            memory_enabled=memory_enabled if isinstance(memory_enabled, bool) else True,
         )
 
     def update(
@@ -91,6 +98,7 @@ class PreferencesService:
         reminder_minutes: int | None = None,
         calendar_notifications: bool | None = None,
         edge_activation: bool | None = None,
+        memory_enabled: bool | None = None,
     ) -> AssistantPreferences:
         if assistant_name is not None:
             self._settings.set(ASSISTANT_NAME_KEY, _valid_name(assistant_name))
@@ -109,6 +117,8 @@ class PreferencesService:
             self._settings.set(CALENDAR_NOTIFICATIONS_KEY, bool(calendar_notifications))
         if edge_activation is not None:
             self._settings.set(EDGE_ACTIVATION_KEY, bool(edge_activation))
+        if memory_enabled is not None:
+            self._settings.set(MEMORY_ENABLED_KEY, bool(memory_enabled))
         return self.get()
 
 

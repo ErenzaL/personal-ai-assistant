@@ -1,15 +1,19 @@
-"""Explicit memory commands spoken in normal chat: remember / recall / forget.
+"""Explicit memory commands spoken in normal chat: recall / forget.
 
-Flow for one user message (see `api/chat.py`):
+Creating a memory is no longer handled here: `memory_extraction.py` runs on
+every user message and picks up anything worth keeping, explicitly asked for
+or not, with a merge step that avoids duplicates. What is left here are the
+two things that are genuinely *commands* rather than passive learning --
+asking what is stored, and asking to remove something -- for which a
+deliberate, deterministic action still makes sense:
 
-    screen()      cheap regex: could this be a memory command?  -> no: normal chat
-    interpret()   one LLM call returning strict JSON (intent + structured fields)
-    execute()     deterministic: MemoryService does the work, and the reply text
-                  is composed here from the *actual* database outcome
+    screen()      cheap regex: could this be a recall/forget request?
+    interpret()   one LLM call returning strict JSON (intent + fields)
+    execute()     deterministic: MemoryService does the work, and the reply
+                  text is composed here from the *actual* database outcome
 
 The model only interprets language. It never writes the confirmation, so it
-cannot claim something was saved or forgotten unless the database did it.
-Nothing is stored unless the user explicitly asked.
+cannot claim something was forgotten unless the database did it.
 """
 
 from __future__ import annotations
@@ -23,14 +27,19 @@ from typing import Literal
 from app.database.models import MEMORY_CATEGORIES, Memory
 from app.database.repositories import SettingsRepository
 from app.services.llm import ChatMessage, LLMService
-from app.services.memory import InvalidMemory, MemoryConflict, MemoryService, slug_key
+from app.services.memory import MemoryService
 
-Intent = Literal["remember", "recall", "forget", "none"]
+Intent = Literal["recall", "forget", "none"]
 
 # --- Stage 1: screen -------------------------------------------------------------
 
+# "remember" is deliberately absent: a bare "remember that X" is now just an
+# ordinary message, caught the same way any other stated fact is -- by the
+# passive extraction pipeline that runs on every turn (memory_extraction.py).
+# This regex only has to catch the two things that still need a *command*:
+# asking what is known, and asking to remove something.
 _SCREEN = re.compile(
-    r"\b(remember|recall|forget|forgot|memori[sz]e|keep in mind|what do you know about me|about me)\b|기억|잊어|잊지",
+    r"\b(recall|forget|forgot|what do you know about me|about me)\b|기억|잊어|잊지",
     re.IGNORECASE,
 )
 # A bare number / ordinal is only meaningful while a forget-choice is pending.
@@ -83,30 +92,19 @@ _INTERPRET_PROMPT = f"""\
 You classify ONE user message for a personal-memory feature of an assistant. Reply with JSON only, no prose.
 
 Schema:
-{{"intent": "remember" | "recall" | "forget" | "none",
+{{"intent": "recall" | "forget" | "none",
  "category": one of {list(MEMORY_CATEGORIES)} or null,
- "key": short lower_snake_case identifier or null,
- "content": short third-person fact or null,
- "keywords": [2-5 distinctive words] ,
- "sensitive": true | false}}
+ "keywords": [2-5 distinctive words]}}
 
 Rules:
-- "remember": the user explicitly asks to remember / save / keep in mind a durable fact about themselves, \
-their life, work, preferences, routines, goals, projects, or people they know. Fill category, key, content. \
-content = the fact rewritten as a short statement about the user in third person, keeping specifics \
-(e.g. "Prefers meetings after 2 PM", "Current main project is Ellen AI"); start with the verb or noun, \
-not with "User". key = stable identifier for that \
-fact (e.g. preferred_meeting_time, reminder_lead_time, current_project).
 - "recall": the user asks what you remember / know about them, optionally one area. Set category if they \
 name one (preferences -> preference, projects -> project, people -> person, routines -> routine, \
 goals -> goal, profile/basic info -> profile, important facts -> important_fact), else null.
 - "forget": the user asks to forget / remove / delete a saved fact. Set keywords (distinctive words that \
 would appear in the saved fact, e.g. ["appointments", "2 PM"]) and category if they name one.
-- "none": anything else, including "I can't remember the name of that movie", questions about memory in \
-general, requests to remember something for someone else, and one-off things to do ("remember to buy \
-milk tomorrow", "remind me to call the bank") -- those are tasks, not durable facts.
-- sensitive = true if the fact reveals health or medical details, religion, sexual orientation, political \
-views, immigration status, ethnicity, passwords/PINs/account numbers, or an exact home address.
+- "none": anything else. Saving a new fact is not handled here -- that happens automatically from \
+ordinary conversation elsewhere -- so a plain statement like "remember that I like tea" is also "none";
+this classifier only ever fires on an explicit request to *see* or *delete* what is already stored.
 """
 
 
@@ -114,10 +112,7 @@ views, immigration status, ethnicity, passwords/PINs/account numbers, or an exac
 class MemoryIntent:
     intent: Intent
     category: str | None = None
-    key: str | None = None
-    content: str | None = None
     keywords: list[str] = field(default_factory=list)
-    sensitive: bool = False
 
 
 async def interpret(llm: LLMService, text: str) -> MemoryIntent:
@@ -136,16 +131,13 @@ def parse_intent(raw: str) -> MemoryIntent:
     if not isinstance(data, dict):
         return MemoryIntent("none")
     intent = data.get("intent")
-    if intent not in ("remember", "recall", "forget"):
+    if intent not in ("recall", "forget"):
         return MemoryIntent("none")
     category = data.get("category")
     return MemoryIntent(
         intent=intent,
         category=category if category in MEMORY_CATEGORIES else None,
-        key=data.get("key") if isinstance(data.get("key"), str) else None,
-        content=data.get("content") if isinstance(data.get("content"), str) else None,
         keywords=[k for k in data.get("keywords") or [] if isinstance(k, str) and k.strip()],
-        sensitive=bool(data.get("sensitive")),
     )
 
 
@@ -181,36 +173,9 @@ class MemoryCommandHandler:
 
     def execute(self, intent: MemoryIntent, original_text: str, conversation_id: str) -> str:
         self._settings.delete(PENDING_FORGET_KEY)
-        if intent.intent == "remember":
-            return self._remember(intent, original_text)
         if intent.intent == "recall":
             return self._recall(intent)
         return self._forget(intent, original_text, conversation_id)
-
-    # -- remember --
-
-    def _remember(self, intent: MemoryIntent, original_text: str) -> str:
-        content = _normalise_fact((intent.content or "").strip() or _strip_command(original_text))
-        if intent.sensitive or _SENSITIVE.search(content) or _SENSITIVE.search(original_text):
-            return "That sounds like sensitive personal information, so I won't store it."
-        category = intent.category or "important_fact"
-        key = _usable_key(intent.key) or _slug_key(content)
-        try:
-            record = self._memory.create_memory(category, key, content, source="user", confidence=1.0)
-        except MemoryConflict:
-            existing = self._memory.search_memories(key=key, category=category, include_inactive=True)
-            if not existing:
-                return "I couldn't save that. Please try rephrasing it."
-            old = existing[0]
-            if not old.is_active:
-                self._memory.reactivate_memory(old.id)
-            if old.content.strip().lower() == content.strip().lower():
-                return f"I already have that saved: {old.content}"
-            record = self._memory.update_memory(old.id, content=content, source="user", confidence=1.0)
-            return f"Updated what I remember: {record.content} (it was: {old.content})"
-        except InvalidMemory as err:
-            return f"I couldn't save that: {err.message}"
-        return f"I'll remember that: {record.content}"
 
     # -- recall --
 
@@ -284,20 +249,3 @@ def _strip_command(text: str) -> str:
     """'Remember that I prefer X' -> 'I prefer X' (fallback when the model gave no content)."""
     cleaned = re.sub(r"^\s*(please\s+)?(remember|forget|recall)\s+(that\s+|the\s+|my\s+)?", "", text, flags=re.I)
     return cleaned.strip().rstrip(".")
-
-
-def _normalise_fact(content: str) -> str:
-    """'User prefers X.' -> 'Prefers X' so replies read naturally."""
-    text = re.sub(r"^(the\s+)?user('s)?\s+", "", content.strip(), flags=re.I).strip().rstrip(".")
-    return text[:1].upper() + text[1:] if text else content.strip()
-
-
-def _usable_key(key: str | None) -> str | None:
-    if not key:
-        return None
-    candidate = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
-    return candidate[:64] or None
-
-
-def _slug_key(content: str) -> str:
-    return slug_key(content)

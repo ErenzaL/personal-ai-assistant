@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import chat, conversations, health, memories, settings as settings_api, tasks
+from app.api import chat, conversations, gmail, health, memories, settings as settings_api, tasks
 from app.config import get_settings
 from app.database import init_database
 from app.services.llm import close_llm_service
@@ -82,3 +82,4 @@ app.include_router(conversations.router)
 app.include_router(memories.router)
 app.include_router(settings_api.router)
 app.include_router(tasks.router)
+app.include_router(gmail.router)

@@ -1,7 +1,7 @@
 import type { BackendStatus } from "../../types/chat";
 import "./ChatHeader.css";
 
-export type PanelView = "chat" | "settings";
+export type PanelView = "chat" | "settings" | "memory";
 
 export interface ChatHeaderProps {
   name: string;
@@ -13,6 +13,11 @@ export interface ChatHeaderProps {
   onClose: () => void;
 }
 
+const TITLE: Record<Exclude<PanelView, "chat">, string> = {
+  settings: "Settings",
+  memory: "What Dully remembers",
+};
+
 const STATUS_LABEL: Record<BackendStatus, string> = {
   unknown: "Connecting…",
   online: "Online",
@@ -21,26 +26,32 @@ const STATUS_LABEL: Record<BackendStatus, string> = {
 
 /** Title bar of the panel. Dragging it moves the whole window. */
 export function ChatHeader({ name, status, view, onNewChat, onOpenSettings, onBack, onClose }: ChatHeaderProps) {
-  const inSettings = view === "settings";
+  const inChat = view === "chat";
   return (
     <header className="chat-header" data-tauri-drag-region>
-      {inSettings && (
-        <button type="button" className="chat-header__button" onClick={onBack} aria-label="Back to chat" title="Back">
+      {!inChat && (
+        <button
+          type="button"
+          className="chat-header__button"
+          onClick={onBack}
+          aria-label={view === "memory" ? "Back to Settings" : "Back to chat"}
+          title="Back"
+        >
           ‹
         </button>
       )}
       <div className="chat-header__titles" data-tauri-drag-region>
         <span className="chat-header__name" data-tauri-drag-region>
-          {inSettings ? "Settings" : name}
+          {inChat ? name : TITLE[view]}
         </span>
-        {!inSettings && (
+        {inChat && (
           <span className={`chat-header__status chat-header__status--${status}`} data-tauri-drag-region>
             {STATUS_LABEL[status]}
           </span>
         )}
       </div>
       <div className="chat-header__actions">
-        {!inSettings && (
+        {inChat && (
           <>
             <button
               type="button"

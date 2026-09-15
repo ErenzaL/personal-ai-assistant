@@ -9,7 +9,11 @@ Execution is deliberately separate from answer generation:
     (answer generation)    the assistant writes the reply from that result
 
 The assistant may only claim something happened when the result says
-`"ok": true`.
+`"ok": true`. Gmail tools (`tools/gmail.py`) follow the exact same shape;
+they simply call the Gmail API instead of SQLite, and are read-only --
+including gmail.draft_reply, which only *retrieves* the email being
+replied to. It never sends, saves, or creates anything; the reply text is
+written by the normal answer-generation step below, from that retrieval.
 """
 
 import sqlite3
@@ -21,25 +25,37 @@ from app.services.tools.calendar import (
     calendar_tools,
     summarise,
 )
+from app.services.tools.gmail import (
+    GMAIL_DRAFT_REPLY,
+    GMAIL_READ,
+    GMAIL_RECENT,
+    GMAIL_SEARCH,
+    gmail_tools,
+)
 from app.services.tools.selector import ToolCall, select
 from app.services.tools.tasks import TaskTools
 
 
 def build_registry(db: sqlite3.Connection) -> ToolRegistry:
     """Every tool available for one request."""
-    return ToolRegistry(TaskTools(db).specs() + calendar_tools())
+    return ToolRegistry(TaskTools(db).specs() + calendar_tools() + gmail_tools())
 
 
 __all__ = [
     "CALENDAR_PROPOSE",
     "CALENDAR_READ",
     "Execution",
+    "GMAIL_DRAFT_REPLY",
+    "GMAIL_READ",
+    "GMAIL_RECENT",
+    "GMAIL_SEARCH",
     "ToolCall",
     "ToolOutcome",
     "ToolRegistry",
     "ToolSpec",
     "build_registry",
     "calendar_tools",
+    "gmail_tools",
     "render_outcome",
     "select",
     "summarise",

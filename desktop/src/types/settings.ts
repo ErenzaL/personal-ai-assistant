@@ -53,12 +53,20 @@ export interface AssistantSettings {
   calendarNotifications: boolean;
   /** Whether the mascot appears when the cursor touches the bottom-right edge. */
   edgeActivation: boolean;
+  /** Whether ordinary conversation is scanned for things worth remembering.
+   *  Off stops new memories; existing ones stay and keep being used. */
+  memoryEnabled: boolean;
 }
 
 export type SettingsPatch = Partial<
   Pick<
     AssistantSettings,
-    "assistantName" | "responseStyle" | "reminderMinutes" | "calendarNotifications" | "edgeActivation"
+    | "assistantName"
+    | "responseStyle"
+    | "reminderMinutes"
+    | "calendarNotifications"
+    | "edgeActivation"
+    | "memoryEnabled"
   >
 > & {
   /** Empty string clears the choice and falls back to the macOS default. */
