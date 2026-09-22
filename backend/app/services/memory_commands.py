@@ -249,3 +249,8 @@ def _strip_command(text: str) -> str:
     """'Remember that I prefer X' -> 'I prefer X' (fallback when the model gave no content)."""
     cleaned = re.sub(r"^\s*(please\s+)?(remember|forget|recall)\s+(that\s+|the\s+|my\s+)?", "", text, flags=re.I)
     return cleaned.strip().rstrip(".")
+
+def _strip_sensitive(text: str) -> str:
+    """Remove any sensitive keywords from the text to avoid accidental exposure."""
+    return _SENSITIVE.sub("[REDACTED]", text)
+

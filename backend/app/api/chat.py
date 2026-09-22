@@ -48,6 +48,17 @@ class ToolResultIn(BaseModel):
     result: dict[str, Any]
 
 
+class AssistantActionOut(BaseModel):
+    """A single button the desktop app may show under this reply. Computed
+    deterministically from the executed tool's own structured result --
+    never inferred by parsing the reply's own text (a markdown-looking
+    button in prose is not application logic)."""
+
+    type: str
+    label: str
+    filter: str | None = None
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     """Conversation to append to. Omitted: the current conversation."""
@@ -74,6 +85,19 @@ class ChatResponse(BaseModel):
     ordinary chat bubble. Never true for anything actually sent or saved --
     this app cannot do either."""
     is_draft: bool = False
+    """Set only for an explicit "open my tasks" navigation command (never for
+    an ordinary question about tasks): which tab the desktop app should open
+    immediately, with no button and no summary needed."""
+    open_tasks_tab: str | None = None
+    """Optional buttons under this reply -- at most one for an ordinary task
+    question, shown only when opening the panel would add real value (never
+    for an empty result, and never for a question the answer already
+    settles). The panel never opens itself for these; the user has to tap."""
+    actions: list[AssistantActionOut] = Field(default_factory=list)
+    """True when some task or checklist item was created, changed, or had
+    its status flipped this turn -- the desktop app refreshes the Tasks
+    panel's data (if it's showing) rather than assuming it's still current."""
+    tasks_changed: bool = False
 
 
 async def _begin(request: ChatRequest, db: sqlite3.Connection) -> Turn:
@@ -186,21 +210,67 @@ def _attach(turn: Turn, db: sqlite3.Connection, results: list[tuple[str, str]]) 
     )
 
 
+# Every task tool whose success means the panel's data may have moved --
+# a fresh task, a status flip, a due-date change, a completed checklist item.
+_TASK_MUTATIONS = {tools.TASKS_CREATE, tools.TASKS_UPDATE, tools.TASKS_COMPLETE, tools.TASKS_CANCEL, tools.TASKS_COMPLETE_ITEM}
+
+# Which Tasks-panel tab a given tasks.list/tasks.open_panel filter maps to.
+_TASKS_TAB_FOR_FILTER = {"today": "today", "overdue": "today", "completed": "completed"}
+
+# A label per tab, kept to exactly these three so the button never grows a
+# new variant per phrasing -- "Open tasks" covers every non-today/completed
+# filter (open, all, upcoming, week, tomorrow, cancelled).
+_TASKS_ACTION_LABEL = {"today": "Open today's tasks", "completed": "Open completed tasks", "upcoming": "Open tasks"}
+
+
+def _tasks_tab(filter_used: str) -> str:
+    return _TASKS_TAB_FOR_FILTER.get(filter_used, "upcoming")
+
+
+def _task_hints(call: "tools.ToolCall", outcome: tools.ToolOutcome) -> dict[str, Any]:
+    if not outcome.ok:
+        return {}
+    if call.name == tools.TASKS_OPEN_PANEL:
+        # An explicit "open my tasks" command: opens immediately, no button.
+        return {"open_tasks_tab": _tasks_tab(str(call.arguments.get("filter", "open")))}
+    if call.name == tools.TASKS_LIST:
+        # An ordinary question about tasks: never opens anything itself.
+        # A button is offered only when the model judged it useful to see
+        # the list (offer_panel) AND there is something to see (count > 0):
+        # an empty result already has nothing more to show, and a question
+        # the answer already settled (a count, a specific due date) doesn't
+        # need one either.
+        offer_panel = bool(call.arguments.get("offer_panel", True))
+        count = outcome.data.get("count", 0) if isinstance(outcome.data.get("count"), int) else 0
+        if not offer_panel or count == 0:
+            return {}
+        tab = _tasks_tab(str(call.arguments.get("filter", "open")))
+        return {"actions": [{"type": "open_task_panel", "label": _TASKS_ACTION_LABEL[tab], "filter": tab}]}
+    if call.name in _TASK_MUTATIONS:
+        return {"tasks_changed": True}
+    return {}
+
+
 async def _with_tools(
     request: ChatRequest, turn: Turn, db: sqlite3.Connection
-) -> tuple[Turn, ClientToolRequest | None, bool]:
+) -> tuple[Turn, ClientToolRequest | None, dict[str, Any]]:
     """Tool phase, kept separate from answer generation.
 
     Returns the turn to answer from, a tool for the client to run when the
-    selected tool needs native access, and whether this turn's answer is a
-    Gmail draft reply (gmail.draft_reply was selected and it actually found
-    a source email) -- the desktop app renders those as a labelled "Draft
-    reply" card with a Copy button instead of an ordinary bubble, since the
-    whole answer *is* the reply text with nothing else added (see the
-    identity prompt's draft rule). False on an ambiguous/not-found/error
-    outcome: there, the answer is an ordinary clarifying or error message.
-    On the second pass the app posts a client tool's result back and it is
-    attached directly; that path is never a draft (draft_reply is never
+    selected tool needs native access, and a small dict of UI hints for the
+    desktop app -- "is_draft" (gmail.draft_reply found a source email: the
+    app renders a labelled "Draft reply" card with a Copy button instead of
+    an ordinary bubble, since the whole answer *is* the reply text with
+    nothing else added -- see the identity prompt's draft rule); for task
+    tools, "open_tasks_tab" (an explicit "open my tasks" command: opens the
+    panel immediately, no button needed), "actions" (an ordinary tasks.list
+    question judged worth a button: the panel stays closed until the user
+    taps it -- see `_task_hints`), and "tasks_changed" (some task or
+    checklist item was created or changed: refresh the panel's data if it's
+    open). Empty on an ambiguous/not-found/error outcome: there, the answer
+    is an ordinary clarifying or error message. On the second pass the app
+    posts a client tool's result back and it is attached directly; that path
+    never carries hints (draft_reply and the task tools are never
     client-executed).
     """
     # Second pass: the desktop app already ran the tool.
@@ -210,35 +280,37 @@ async def _with_tools(
             body = tools.summarise(item.result) if item.name == tools.CALENDAR_READ else item.result
             rendered.append((item.name, tools.render_outcome(body)))
             log.info("client tool %s: %s", item.name, "ok" if item.result.get("ok") else "failed")
-        return _attach(turn, db, rendered), None, False
+        return _attach(turn, db, rendered), None, {}
 
     text = turn.user_message.content
     registry = tools.build_registry(db)
     call = await tools.select(get_llm_service(), registry, text, turn.prompt.history)
     if call is None:
-        return turn, None, False
+        return turn, None, {}
 
     # Calendar tools run in the desktop app, not here.
     if registry.runs_on_client(call.name):
         checked = registry.validate(call.name, call.arguments)
         if isinstance(checked, tools.ToolOutcome):
-            return _attach(turn, db, [(call.name, checked.to_text())]), None, False
-        return turn, ClientToolRequest(call.name, checked), False
+            return _attach(turn, db, [(call.name, checked.to_text())]), None, {}
+        return turn, ClientToolRequest(call.name, checked), {}
 
     outcome = registry.execute(call.name, call.arguments)
-    is_draft = call.name == tools.GMAIL_DRAFT_REPLY and outcome.ok
-    return _attach(turn, db, [(call.name, outcome.to_text())]), None, is_draft
+    hints: dict[str, Any] = _task_hints(call, outcome)
+    if call.name == tools.GMAIL_DRAFT_REPLY and outcome.ok:
+        hints["is_draft"] = True
+    return _attach(turn, db, [(call.name, outcome.to_text())]), None, hints
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -> ChatResponse:
     turn = await _begin(request, db)
     memory_task = _spawn_extraction(turn, db)
-    is_draft = False
+    hints: dict[str, Any] = {}
     try:
         answer = await _memory_reply(turn, db)
         if answer is None:
-            turn, client_tool, is_draft = await _with_tools(request, turn, db)
+            turn, client_tool, hints = await _with_tools(request, turn, db)
             if client_tool is not None:
                 # The extraction task keeps running in the background (see
                 # `_background_tasks`); this response has no "done" moment
@@ -261,7 +333,10 @@ async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -
         user_message_id=turn.user_message.id,
         assistant_message_id=assistant_id,
         memory_saved=await _collect_memory_saved(memory_task),
-        is_draft=is_draft,
+        is_draft=hints.get("is_draft", False),
+        open_tasks_tab=hints.get("open_tasks_tab"),
+        actions=hints.get("actions", []),
+        tasks_changed=hints.get("tasks_changed", False),
     )
 
 
@@ -269,7 +344,8 @@ async def chat(request: ChatRequest, db: sqlite3.Connection = Depends(get_db)) -
 # Server-Sent Events framing over a POST body. Event types, in order:
 #   meta   {"conversation_id", "user_message_id"}   the saved user message
 #   delta  {"text": "..."}                           a piece of the answer
-#   done   {"assistant_message_id"}                  reply complete and saved
+#   done   {"assistant_message_id", "memory_saved"?, "is_draft"?,
+#           "open_tasks_tab"?, "actions"?, "tasks_changed"?}  reply complete and saved
 #   error  {"code", "message"}                       failed mid-way (in-band,
 #                                                    since status is already 200)
 # Failures *before* the first token still surface as a normal HTTP error
@@ -294,11 +370,11 @@ async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
     client_tool: ClientToolRequest | None = None
-    is_draft = False
+    hints: dict[str, Any] = {}
     try:
         command_reply = await _memory_reply(turn, db)
         if command_reply is None:
-            turn, client_tool, is_draft = await _with_tools(request, turn, db)
+            turn, client_tool, hints = await _with_tools(request, turn, db)
     except LLMError as err:
         raise _http_error(err) from err
 
@@ -358,8 +434,14 @@ async def chat_stream(request: ChatRequest, db: sqlite3.Connection = Depends(get
             done: dict[str, Any] = {"assistant_message_id": assistant_id}
             if memory_saved:
                 done["memory_saved"] = memory_saved
-            if is_draft:
+            if hints.get("is_draft"):
                 done["is_draft"] = True
+            if hints.get("open_tasks_tab"):
+                done["open_tasks_tab"] = hints["open_tasks_tab"]
+            if hints.get("actions"):
+                done["actions"] = hints["actions"]
+            if hints.get("tasks_changed"):
+                done["tasks_changed"] = True
             yield _sse("done", done)
         except LLMError as err:
             log.warning("chat stream failed: %s: %s", err.kind, err.message)

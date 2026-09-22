@@ -44,10 +44,13 @@ class GmailStatusOut(BaseModel):
     """Set only when there is something more useful to say than a plain
     "not connected" -- currently just a refresh that couldn't reach Google."""
     detail: str | None = None
+    """The connected account's own address, when known. Never set unless
+    `connected` is true."""
+    email: str | None = None
 
     @classmethod
     def from_status(cls, status: gmail_service.GmailStatus) -> "GmailStatusOut":
-        return cls(connected=status.connected, detail=status.detail)
+        return cls(connected=status.connected, detail=status.detail, email=status.email)
 
 
 @router.get("/status", response_model=GmailStatusOut)
@@ -67,7 +70,9 @@ def connect() -> GmailStatusOut:
         gmail_service.connect()
     except GmailError as err:
         raise _http(err) from err
-    return GmailStatusOut(connected=True)
+    # Fetch the address right away so it shows up immediately, not only on
+    # the next status poll.
+    return GmailStatusOut.from_status(gmail_service.status())
 
 
 @router.post("/disconnect", response_model=GmailStatusOut)

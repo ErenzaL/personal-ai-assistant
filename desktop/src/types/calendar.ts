@@ -67,7 +67,13 @@ export type CalendarErrorCode =
   /** A start/end date could not be read, or the range is backwards. */
   | "invalid_range"
   /** A command argument was missing, too long, or otherwise unusable. */
-  | "invalid_input";
+  | "invalid_input"
+  /** The event (or the calendar named for it) no longer exists. */
+  | "not_found"
+  /** The calendar does not accept new events or changes to existing ones. */
+  | "read_only_calendar"
+  /** EventKit refused to save the change. */
+  | "save_failed";
 
 export interface CalendarError {
   code: CalendarErrorCode;
@@ -105,3 +111,31 @@ export interface EventProposal {
 
 /** Used when the user gives a start time but no duration. */
 export const DEFAULT_DURATION_MINUTES = 60;
+
+/** Fields to change on an existing event; undefined means "leave as is". */
+export interface EventChanges {
+  title?: string;
+  /** Local ISO 8601 without an offset. */
+  start?: string;
+  end?: string;
+  calendarId?: string;
+  location?: string;
+  notes?: string;
+}
+
+/**
+ * A change to an EXISTING event, awaiting confirmation. Nothing is written
+ * until the user confirms -- same discipline as `EventProposal`, just for
+ * update/delete instead of create.
+ */
+export interface EventMutationProposal {
+  kind: "update" | "delete";
+  eventId: string;
+  title: string;
+  calendarTitle: string;
+  /** The event exactly as EventKit has it right now. */
+  before: CalendarEvent;
+  /** Only for "update": the fields that will actually change, already
+   *  merged with everything the user didn't ask to touch. */
+  changes?: EventChanges;
+}

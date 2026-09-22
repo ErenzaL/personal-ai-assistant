@@ -10,15 +10,21 @@ from __future__ import annotations
 import sqlite3
 from typing import Literal
 
-from app.database.models import TASK_PRIORITIES, TASK_STATUSES, Task, TaskPriority, TaskStatus
+from app.database.models import TASK_PRIORITIES, TASK_STATUSES, Task, TaskItem, TaskPriority, TaskStatus
 from app.database.repositories.tasks import TaskRepository
 from app.services import timeutil
 
 TITLE_MAX_LEN = 200
 DESCRIPTION_MAX_LEN = 2000
+CATEGORY_MAX_LEN = 60
+ITEM_TEXT_MAX_LEN = 200
 
-TaskFilter = Literal["today", "tomorrow", "week", "overdue", "open", "completed", "cancelled", "all"]
-TASK_FILTERS: tuple[str, ...] = ("today", "tomorrow", "week", "overdue", "open", "completed", "cancelled", "all")
+TaskFilter = Literal[
+    "today", "tomorrow", "week", "upcoming", "overdue", "open", "completed", "cancelled", "all"
+]
+TASK_FILTERS: tuple[str, ...] = (
+    "today", "tomorrow", "week", "upcoming", "overdue", "open", "completed", "cancelled", "all"
+)
 
 _UNSET = object()
 
@@ -39,6 +45,10 @@ class TaskNotFound(TaskError):
     pass
 
 
+class TaskItemNotFound(TaskError):
+    pass
+
+
 class TaskService:
     def __init__(self, db: sqlite3.Connection) -> None:
         self._repo = TaskRepository(db)
@@ -53,17 +63,26 @@ class TaskService:
         due_at: str | None = None,
         priority: str = "normal",
         remind_at: str | None = None,
+        category: str = "",
+        items: list[str] | None = None,
     ) -> Task:
         due_utc = _valid_moment(due_at, "due date")
         remind_utc = _valid_moment(remind_at, "reminder time")
         _check_reminder_order(due_utc, remind_utc)
-        return self._repo.create(
+        # Validate every checklist item before writing anything, so a task
+        # never ends up half-created with some items missing.
+        valid_items = [_valid_item_text(text) for text in (items or [])]
+        task = self._repo.create(
             _valid_title(title),
             _valid_description(description),
             due_utc,
             priority=_valid_priority(priority),
             remind_at=remind_utc,
+            category=_valid_category(category),
         )
+        for text in valid_items:
+            self._repo.add_item(task.id, text)
+        return task
 
     def update_task(
         self,
@@ -74,6 +93,7 @@ class TaskService:
         due_at: str | None | object = _UNSET,
         priority: str | None = None,
         remind_at: str | None | object = _UNSET,
+        category: str | None = None,
     ) -> Task:
         """Change the given fields. Pass `due_at=None` or `remind_at=None`
         explicitly to clear them; omit to leave unchanged."""
@@ -88,6 +108,8 @@ class TaskService:
             changes["description"] = _valid_description(description)
         if priority is not None:
             changes["priority"] = _valid_priority(priority)
+        if category is not None:
+            changes["category"] = _valid_category(category)
         if due_at is not _UNSET:
             changes["due_at"] = _valid_moment(due_at, "due date")  # type: ignore[arg-type]
         if remind_at is not _UNSET:
@@ -134,18 +156,26 @@ class TaskService:
         window = _valid_filter(task_filter)
         if window == "today":
             start, end = timeutil.local_day_range()
-            return self._repo.due_between(start, end)
+            # Overdue open tasks surface here too, ahead of today's own, so
+            # nothing due in the past silently disappears from the Today view.
+            return self._repo.overdue(start) + self._repo.due_between(start, end)
         if window == "tomorrow":
             start, end = timeutil.local_day_range(1)
             return self._repo.due_between(start, end)
         if window == "week":
             start, end = timeutil.local_week_range()
             return self._repo.due_between(start, end)
+        if window == "upcoming":
+            # Every open task due tomorrow or later, plus every undated open
+            # task -- nothing with no due date is ever hidden.
+            return self._repo.upcoming(timeutil.local_day_range(1)[0], limit=limit)
         if window == "overdue":
             return self._repo.overdue(timeutil.now_utc_iso())
+        if window == "completed":
+            return self._repo.completed(limit=limit)
         if window == "all":
             return self._repo.list(limit=limit)
-        return self._repo.list(status=window, limit=limit)  # open | completed | cancelled
+        return self._repo.list(status=window, limit=limit)  # open | cancelled
 
     def search_tasks(self, text: str, *, status: TaskStatus | None = "open") -> list[Task]:
         return self._repo.search(text, status=status)
@@ -154,6 +184,61 @@ class TaskService:
         """Open tasks whose reminder time has passed. Nothing consumes this
         yet; proactive notifications are a later step."""
         return self._repo.due_for_reminder(timeutil.now_utc_iso())
+
+    def delete_task(self, task_id: str) -> None:
+        """Hard delete, cascading to the task's own items. Kept for API
+        completeness; no casual UI control calls this -- tasks are
+        completed or cancelled, not deleted, by default."""
+        if not self._repo.delete(task_id):
+            raise TaskNotFound("I couldn't find that task.")
+
+    # --- checklist items ---
+
+    def list_items(self, task_id: str) -> list[TaskItem]:
+        self.get_task(task_id)  # raises TaskNotFound if it doesn't exist
+        return self._repo.list_items(task_id)
+
+    def items_progress(self, task_id: str) -> tuple[int, int]:
+        return self._repo.items_progress(task_id)
+
+    def add_item(self, task_id: str, text: str) -> TaskItem:
+        self.get_task(task_id)
+        return self._repo.add_item(task_id, _valid_item_text(text))
+
+    def update_item(self, task_id: str, item_id: str, *, text: str) -> TaskItem:
+        self._own_item(task_id, item_id)
+        record = self._repo.update_item(item_id, text=_valid_item_text(text))
+        if record is None:
+            raise TaskItemNotFound("I couldn't find that checklist item.")
+        return record
+
+    def complete_item(self, task_id: str, item_id: str) -> TaskItem:
+        return self._set_item_completed(task_id, item_id, True)
+
+    def reopen_item(self, task_id: str, item_id: str) -> TaskItem:
+        return self._set_item_completed(task_id, item_id, False)
+
+    def delete_item(self, task_id: str, item_id: str) -> None:
+        self._own_item(task_id, item_id)
+        if not self._repo.delete_item(item_id):
+            raise TaskItemNotFound("I couldn't find that checklist item.")
+
+    def get_item(self, task_id: str, item_id: str) -> TaskItem:
+        return self._own_item(task_id, item_id)
+
+    def _set_item_completed(self, task_id: str, item_id: str, completed: bool) -> TaskItem:
+        self._own_item(task_id, item_id)
+        record = self._repo.set_item_completed(item_id, completed)
+        if record is None:
+            raise TaskItemNotFound("I couldn't find that checklist item.")
+        return record
+
+    def _own_item(self, task_id: str, item_id: str) -> TaskItem:
+        """Confirms the item exists AND actually belongs to that task."""
+        item = self._repo.get_item(item_id)
+        if item is None or item.task_id != task_id:
+            raise TaskItemNotFound("I couldn't find that checklist item.")
+        return item
 
 
 # --- validation ---
@@ -172,6 +257,22 @@ def _valid_description(description: str) -> str:
     value = description.strip()
     if len(value) > DESCRIPTION_MAX_LEN:
         raise InvalidTask(f"The description must be at most {DESCRIPTION_MAX_LEN} characters.")
+    return value
+
+
+def _valid_category(category: str) -> str:
+    value = " ".join(category.split())
+    if len(value) > CATEGORY_MAX_LEN:
+        raise InvalidTask(f"The category must be at most {CATEGORY_MAX_LEN} characters.")
+    return value
+
+
+def _valid_item_text(text: str) -> str:
+    value = " ".join(text.split())
+    if not value:
+        raise InvalidTask("A checklist item needs some text.")
+    if len(value) > ITEM_TEXT_MAX_LEN:
+        raise InvalidTask(f"A checklist item must be at most {ITEM_TEXT_MAX_LEN} characters.")
     return value
 
 

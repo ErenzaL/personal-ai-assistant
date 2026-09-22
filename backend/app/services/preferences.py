@@ -8,7 +8,7 @@ history (what was said).
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.database.repositories import SettingsRepository
 from app.services.llm.prompts import DEFAULT_ASSISTANT_NAME
@@ -20,6 +20,7 @@ REMINDER_MINUTES_KEY = "reminder_minutes"
 CALENDAR_NOTIFICATIONS_KEY = "calendar_notifications"
 EDGE_ACTIVATION_KEY = "edge_activation"
 MEMORY_ENABLED_KEY = "memory_enabled"
+HIDDEN_CALENDARS_KEY = "hidden_calendar_ids"
 
 DEFAULT_NAME = DEFAULT_ASSISTANT_NAME
 NAME_MAX_LEN = 24
@@ -55,6 +56,10 @@ class AssistantPreferences:
     Off stops new memories being created; existing ones stay and are still
     used to answer, and can still be reviewed, edited or forgotten."""
     memory_enabled: bool = True
+    """EventKit calendar identifiers hidden from Dully -- excluded from
+    calendar.read results and from the "new events go to" choices. The
+    calendars themselves are untouched; this only affects what Dully sees."""
+    hidden_calendar_ids: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def style_instruction(self) -> str:
@@ -79,6 +84,7 @@ class PreferencesService:
         notify = self._settings.get(CALENDAR_NOTIFICATIONS_KEY, True)
         edge = self._settings.get(EDGE_ACTIVATION_KEY, True)
         memory_enabled = self._settings.get(MEMORY_ENABLED_KEY, True)
+        hidden_calendars = self._settings.get(HIDDEN_CALENDARS_KEY, [])
         return AssistantPreferences(
             assistant_name=name if isinstance(name, str) and name.strip() else DEFAULT_NAME,
             response_style=style if style in RESPONSE_STYLES else DEFAULT_STYLE,
@@ -87,6 +93,7 @@ class PreferencesService:
             calendar_notifications=notify if isinstance(notify, bool) else True,
             edge_activation=edge if isinstance(edge, bool) else True,
             memory_enabled=memory_enabled if isinstance(memory_enabled, bool) else True,
+            hidden_calendar_ids=_valid_hidden_calendars(hidden_calendars),
         )
 
     def update(
@@ -99,6 +106,7 @@ class PreferencesService:
         calendar_notifications: bool | None = None,
         edge_activation: bool | None = None,
         memory_enabled: bool | None = None,
+        hidden_calendar_ids: list[str] | None = None,
     ) -> AssistantPreferences:
         if assistant_name is not None:
             self._settings.set(ASSISTANT_NAME_KEY, _valid_name(assistant_name))
@@ -119,6 +127,8 @@ class PreferencesService:
             self._settings.set(EDGE_ACTIVATION_KEY, bool(edge_activation))
         if memory_enabled is not None:
             self._settings.set(MEMORY_ENABLED_KEY, bool(memory_enabled))
+        if hidden_calendar_ids is not None:
+            self._settings.set(HIDDEN_CALENDARS_KEY, list(_valid_hidden_calendars(hidden_calendar_ids)))
         return self.get()
 
 
@@ -136,6 +146,16 @@ def _valid_style(style: str) -> str:
     if value not in RESPONSE_STYLES:
         raise InvalidPreference(f"Style must be one of: {', '.join(RESPONSE_STYLES)}.")
     return value
+
+
+def _valid_hidden_calendars(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    seen: dict[str, None] = {}
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            seen[item.strip()] = None
+    return tuple(seen)
 
 
 def _minutes_ok(value: object) -> bool:

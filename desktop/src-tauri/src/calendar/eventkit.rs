@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::calendar::types::{
-    AuthorizationStatus, CalendarError, CalendarErrorCode, CalendarEvent, CalendarInfo, NewEvent,
+    AuthorizationStatus, CalendarError, CalendarErrorCode, CalendarEvent, CalendarInfo, EventChanges, NewEvent,
 };
 
 /// How long to wait for the user to answer the system prompt before giving
@@ -38,6 +38,24 @@ enum Job {
     ListUpcoming {
         horizon_secs: i64,
         reply: SyncSender<Result<Vec<CalendarEvent>, CalendarError>>,
+    },
+    /// One event by id, read back as EventKit currently has it. Used both to
+    /// preserve untouched fields before an update and to resolve "it" across
+    /// turns without re-matching by title.
+    GetEvent {
+        id: String,
+        reply: SyncSender<Result<CalendarEvent, CalendarError>>,
+    },
+    UpdateEvent {
+        id: String,
+        changes: EventChanges,
+        reply: SyncSender<Result<CalendarEvent, CalendarError>>,
+    },
+    /// Returns the event as it was immediately before removal, so the caller
+    /// can say what was actually cancelled without a second round trip.
+    DeleteEvent {
+        id: String,
+        reply: SyncSender<Result<CalendarEvent, CalendarError>>,
     },
 }
 
@@ -165,6 +183,43 @@ impl BridgeHandle {
         }
     }
 
+    /// One event by id, exactly as EventKit currently has it.
+    pub fn get_event(&self, id: String) -> Result<CalendarEvent, CalendarError> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.post(Job::GetEvent { id, reply: tx })?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(CalendarError::unavailable(
+                "The calendar service stopped responding.",
+            )),
+        }
+    }
+
+    /// Change only the given fields of an existing event. Only ever called
+    /// after the user confirms a proposed change.
+    pub fn update_event(&self, id: String, changes: EventChanges) -> Result<CalendarEvent, CalendarError> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.post(Job::UpdateEvent { id, changes, reply: tx })?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(CalendarError::unavailable(
+                "The calendar service stopped responding.",
+            )),
+        }
+    }
+
+    /// Remove an event. Only ever called after the user confirms.
+    pub fn delete_event(&self, id: String) -> Result<CalendarEvent, CalendarError> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.post(Job::DeleteEvent { id, reply: tx })?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(CalendarError::unavailable(
+                "The calendar service stopped responding.",
+            )),
+        }
+    }
+
     fn post(&self, job: Job) -> Result<(), CalendarError> {
         self.jobs
             .send(job)
@@ -213,6 +268,15 @@ fn worker(rx: Receiver<Job>, on_change: ChangeHook) {
             Job::ListUpcoming { horizon_secs, reply } => {
                 let _ = reply.send(macos::list_upcoming(&store, horizon_secs));
             }
+            Job::GetEvent { id, reply } => {
+                let _ = reply.send(macos::get_event(&store, &id));
+            }
+            Job::UpdateEvent { id, changes, reply } => {
+                let _ = reply.send(macos::update_event(&store, &id, &changes));
+            }
+            Job::DeleteEvent { id, reply } => {
+                let _ = reply.send(macos::delete_event(&store, &id));
+            }
         }
     }
 }
@@ -255,6 +319,21 @@ fn worker(rx: Receiver<Job>, _on_change: ChangeHook) {
                     "Calendar access is only available on macOS.",
                 )));
             }
+            Job::GetEvent { reply, .. } => {
+                let _ = reply.send(Err(CalendarError::unsupported(
+                    "Calendar access is only available on macOS.",
+                )));
+            }
+            Job::UpdateEvent { reply, .. } => {
+                let _ = reply.send(Err(CalendarError::unsupported(
+                    "Calendar access is only available on macOS.",
+                )));
+            }
+            Job::DeleteEvent { reply, .. } => {
+                let _ = reply.send(Err(CalendarError::unsupported(
+                    "Calendar access is only available on macOS.",
+                )));
+            }
         }
     }
 }
@@ -267,7 +346,7 @@ mod macos {
     use objc2::runtime::Bool;
     use objc2::sel;
     use objc2::runtime::NSObjectProtocol;
-    use crate::calendar::types::{CalendarEvent, CalendarInfo, NewEvent, SourceType};
+    use crate::calendar::types::{CalendarEvent, CalendarInfo, EventChanges, NewEvent, SourceType};
     use objc2_core_graphics::CGColor;
     use objc2_event_kit::{
         EKAuthorizationStatus, EKCalendar, EKEntityType, EKEvent, EKEventStore, EKSourceType, EKSpan,
@@ -709,5 +788,150 @@ mod macos {
             .ok_or_else(|| {
                 CalendarError::new(CalendarErrorCode::SaveFailed, "The event was saved but could not be read back.")
             })
+    }
+
+    /// Fetch one existing event by id, as EventKit currently has it. Never
+    /// mutates anything.
+    fn fetch_event(
+        store: &EKEventStore,
+        id: &str,
+    ) -> Result<objc2::rc::Retained<EKEvent>, CalendarError> {
+        if !status().grants_read() {
+            return Err(CalendarError::new(
+                CalendarErrorCode::NotAuthorized,
+                "Calendar access has not been granted yet.",
+            ));
+        }
+        // SAFETY: reading an event by an id this app already holds (from an
+        // earlier list/create), for an entity type we hold access to.
+        unsafe { store.eventWithIdentifier(&NSString::from_str(id)) }.ok_or_else(|| {
+            CalendarError::new(
+                CalendarErrorCode::NotFound,
+                "That event no longer exists -- it may have already been changed or removed.",
+            )
+        })
+    }
+
+    pub(super) fn get_event(store: &EKEventStore, id: &str) -> Result<CalendarEvent, CalendarError> {
+        let event = fetch_event(store, id)?;
+        describe(&event, &formatter(ISO_LOCAL)).map(|(_, found)| found).ok_or_else(|| {
+            CalendarError::new(CalendarErrorCode::NotFound, "That event could not be read.")
+        })
+    }
+
+    pub(super) fn update_event(
+        store: &EKEventStore,
+        id: &str,
+        changes: &EventChanges,
+    ) -> Result<CalendarEvent, CalendarError> {
+        let event = fetch_event(store, id)?;
+
+        let current_calendar = unsafe { event.calendar() }.ok_or_else(|| {
+            CalendarError::new(CalendarErrorCode::NotFound, "That event has no calendar and cannot be changed.")
+        })?;
+        if !unsafe { current_calendar.allowsContentModifications() } {
+            return Err(CalendarError::new(
+                CalendarErrorCode::ReadOnlyCalendar,
+                format!("'{}' does not allow changes to its events.", unsafe { current_calendar.title() }),
+            ));
+        }
+
+        if let Some(title) = changes.title.as_deref().map(str::trim) {
+            if title.is_empty() {
+                return Err(CalendarError::new(CalendarErrorCode::InvalidInput, "The title cannot be empty."));
+            }
+            unsafe { event.setTitle(Some(&NSString::from_str(title))) };
+        }
+
+        // Start/end are applied independently, then checked together against
+        // whichever side (new or already-on-the-event) ends up in effect --
+        // the caller (the frontend) is expected to send both when changing
+        // either, computed from the event's own current duration, but this
+        // stays correct even if only one side is ever sent.
+        if let Some(start) = changes.start.as_deref() {
+            let parsed = parse_date(start, "start")?;
+            unsafe { event.setStartDate(Some(&parsed)) };
+        }
+        if let Some(end) = changes.end.as_deref() {
+            let parsed = parse_date(end, "end")?;
+            unsafe { event.setEndDate(Some(&parsed)) };
+        }
+        let effective_start = unsafe { event.startDate() };
+        let effective_end = unsafe { event.endDate() };
+        if effective_end.timeIntervalSince1970() <= effective_start.timeIntervalSince1970() {
+            return Err(CalendarError::new(
+                CalendarErrorCode::InvalidRange,
+                "The event must end after it starts.",
+            ));
+        }
+
+        if let Some(calendar_id) = changes.calendar_id.as_deref().filter(|c| !c.is_empty()) {
+            let target = unsafe { store.calendarsForEntityType(EKEntityType::Event) }
+                .iter()
+                .find(|c| unsafe { c.calendarIdentifier() }.to_string() == calendar_id)
+                .ok_or_else(|| {
+                    CalendarError::new(CalendarErrorCode::NotFound, "That calendar no longer exists.")
+                })?;
+            if !unsafe { target.allowsContentModifications() } {
+                return Err(CalendarError::new(
+                    CalendarErrorCode::ReadOnlyCalendar,
+                    format!("'{}' does not accept events. Pick a different calendar.", unsafe { target.title() }),
+                ));
+            }
+            unsafe { event.setCalendar(Some(&target)) };
+        }
+
+        if let Some(location) = changes.location.as_deref() {
+            let trimmed = location.trim();
+            let value = (!trimmed.is_empty()).then(|| NSString::from_str(trimmed));
+            unsafe { event.setLocation(value.as_deref()) };
+        }
+        if let Some(notes) = changes.notes.as_deref() {
+            let trimmed = notes.trim();
+            let value = (!trimmed.is_empty()).then(|| NSString::from_str(trimmed));
+            unsafe { event.setNotes(value.as_deref()) };
+        }
+
+        unsafe { store.saveEvent_span_error(&event, EKSpan::ThisEvent) }.map_err(|err| {
+            CalendarError::new(
+                CalendarErrorCode::SaveFailed,
+                format!("macOS would not save the change: {}", err.localizedDescription()),
+            )
+        })?;
+
+        describe(&event, &formatter(ISO_LOCAL))
+            .map(|(_, stored)| stored)
+            .ok_or_else(|| {
+                CalendarError::new(CalendarErrorCode::SaveFailed, "The change was saved but could not be read back.")
+            })
+    }
+
+    pub(super) fn delete_event(store: &EKEventStore, id: &str) -> Result<CalendarEvent, CalendarError> {
+        let event = fetch_event(store, id)?;
+
+        let calendar = unsafe { event.calendar() };
+        if let Some(calendar) = &calendar {
+            if !unsafe { calendar.allowsContentModifications() } {
+                return Err(CalendarError::new(
+                    CalendarErrorCode::ReadOnlyCalendar,
+                    format!("'{}' does not allow removing its events.", unsafe { calendar.title() }),
+                ));
+            }
+        }
+
+        // Captured before removal -- this is what the caller shows as "what
+        // was cancelled", since there is nothing left to read back after.
+        let snapshot = describe(&event, &formatter(ISO_LOCAL)).map(|(_, found)| found).ok_or_else(|| {
+            CalendarError::new(CalendarErrorCode::NotFound, "That event could not be read.")
+        })?;
+
+        unsafe { store.removeEvent_span_error(&event, EKSpan::ThisEvent) }.map_err(|err| {
+            CalendarError::new(
+                CalendarErrorCode::SaveFailed,
+                format!("macOS would not remove the event: {}", err.localizedDescription()),
+            )
+        })?;
+
+        Ok(snapshot)
     }
 }

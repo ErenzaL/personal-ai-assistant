@@ -7,6 +7,9 @@ export interface GmailState {
    *  beyond plain connected/not (currently just a refresh that failed to
    *  reach Google -- the connection may still be fine). */
   detail: string | null;
+  /** The connected account's own address, when known. Never set unless
+   *  `connected` is true. */
+  email: string | null;
 }
 
 /**

@@ -1,18 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BackendStatus, Conversation, Message, MessageRole, QuickAction } from "../types/chat";
+import type { AssistantAction, BackendStatus, Conversation, Message, MessageRole, PendingAction, QuickAction } from "../types/chat";
 import {
   ApiError,
   createConversation,
+  deleteTask,
   describeApiError,
   getCurrentConversation,
   streamChatMessage,
   type ChatToolResult,
   type MessageDto,
 } from "../services/api";
-import { CALENDAR_PROPOSE, canRun, proposeEvent, runClientTool } from "../services/clientTools";
-import { createEvent, isCalendarError } from "../services/calendar";
+import {
+  CALENDAR_DELETE,
+  CALENDAR_PROPOSE,
+  CALENDAR_UPDATE,
+  canRun,
+  isCalendarMutation,
+  proposeEvent,
+  proposeEventDelete,
+  proposeEventUpdate,
+  runClientTool,
+} from "../services/clientTools";
+import { createEvent, deleteEvent, isCalendarError, updateEvent } from "../services/calendar";
 import type { EventProposal } from "../types/calendar";
 import { greeting } from "../stores/chatSeed";
+
+/** "Tuesday at 3:00 PM", for a calendar confirmation bubble. */
+function formatWhen(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" });
+}
+
+const YES_WORDS = new Set(["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "do it", "confirm", "please do", "go ahead"]);
+const NO_WORDS = new Set(["no", "nope", "nah", "never mind", "nevermind", "don't", "do not", "keep it"]);
+
+/** A typed reply to an unresolved pending-action card, or null if `text`
+ *  isn't one -- deliberately exact-match on the whole (trimmed) message, not
+ *  a substring, so an unrelated message that happens to contain "yes"
+ *  never misfires. "cancel" is intentionally not a no-word: for a calendar
+ *  deletion the confirm button itself reads "Cancel appointment". */
+function parseYesNo(text: string): "yes" | "no" | null {
+  const normalized = text.trim().toLowerCase().replace(/[.!]+$/, "");
+  if (YES_WORDS.has(normalized)) return "yes";
+  if (NO_WORDS.has(normalized)) return "no";
+  return null;
+}
 
 function makeMessage(role: MessageRole, text: string, extra: Partial<Message> = {}): Message {
   return {
@@ -60,7 +93,19 @@ interface PendingTurn {
 const STARTUP_RETRIES = 12;
 const STARTUP_RETRY_MS = 1500;
 
-export function useChat(defaultCalendarId: string | null = null) {
+export interface TaskChatHooks {
+  /** A tasks.list lookup succeeded this turn: which Tasks-panel tab to show. */
+  onOpenTasksTab?: (tab: string) => void;
+  /** Some task or checklist item was created, changed, or had its status
+   *  flipped this turn -- refresh the panel's data if it's showing. */
+  onTasksChanged?: () => void;
+}
+
+export function useChat(
+  defaultCalendarId: string | null = null,
+  hiddenCalendarIds: string[] = [],
+  taskHooks: TaskChatHooks = {},
+) {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -72,6 +117,11 @@ export function useChat(defaultCalendarId: string | null = null) {
   const [memoryNotice, setMemoryNotice] = useState<{ content: string; at: number } | null>(null);
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
+  /** The last EXISTING event a calendar mutation resolved to exactly one
+   *  match, for this conversation -- lets "actually make it 3:30" resolve
+   *  without repeating the event's name (ids never round-trip through the
+   *  model itself). Cleared on a fresh conversation. */
+  const lastFocusedEventId = useRef<string | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -123,9 +173,15 @@ export function useChat(defaultCalendarId: string | null = null) {
     // Attached to the assistant message once it finishes, so the card appears
     // under the sentence that introduces it.
     let pendingProposal: EventProposal | null = null;
+    // Same idea, for a change to an EXISTING event or task (never a brand
+    // new one -- that's `pendingProposal` above).
+    let pendingAction: PendingAction | null = null;
     // Same idea: the whole reply is a Gmail draft, shown with a Copy button
     // instead of a plain bubble once we know (only at "done").
     let isDraftReply = false;
+    // Buttons the backend attached to this reply (usually none), same
+    // "known only at done" timing as the rest of these.
+    let replyActions: AssistantAction[] = [];
     const finish = (finalId?: string) => {
       if (assistantId === null) return;
       const id = assistantId;
@@ -137,7 +193,9 @@ export function useChat(defaultCalendarId: string | null = null) {
                 id: finalId || m.id,
                 streaming: false,
                 ...(pendingProposal ? { proposal: pendingProposal } : {}),
+                ...(pendingAction ? { pendingAction } : {}),
                 ...(isDraftReply ? { isDraft: true } : {}),
+                ...(replyActions.length > 0 ? { actions: replyActions } : {}),
               }
             : m,
         ),
@@ -221,9 +279,56 @@ export function useChat(defaultCalendarId: string | null = null) {
             options,
           );
         }
+      } else if (outcome.kind === "client_tool" && isCalendarMutation(outcome.name)) {
+        // Same idea as CALENDAR_PROPOSE above, for a change to an EXISTING
+        // event instead of a brand new one: find it, prepare what would
+        // change, send that back so the assistant asks to confirm. Nothing
+        // is written until the card's Confirm (or a typed "yes") fires
+        // `confirmPendingAction`.
+        const isUpdate = outcome.name === CALENDAR_UPDATE;
+        const prepared = isUpdate
+          ? await proposeEventUpdate(outcome.arguments, lastFocusedEventId.current, hiddenCalendarIds)
+          : await proposeEventDelete(outcome.arguments, lastFocusedEventId.current, hiddenCalendarIds);
+        if (!mounted.current) return;
+
+        let resultPayload: Record<string, unknown>;
+        if ("error" in prepared) {
+          resultPayload = { ok: false, tool: outcome.name, error: { code: "not_found", message: prepared.error } };
+        } else if ("ambiguous" in prepared) {
+          resultPayload = {
+            ok: false,
+            tool: outcome.name,
+            error: {
+              code: "ambiguous",
+              message: "More than one event matches; ask the user which one they mean.",
+              candidates: prepared.ambiguous.slice(0, 5).map((event) => ({
+                title: event.title,
+                when: formatWhen(event.start),
+              })),
+            },
+          };
+        } else {
+          lastFocusedEventId.current = prepared.proposal.eventId || null;
+          pendingAction = { kind: isUpdate ? "calendar_update" : "calendar_delete", proposal: prepared.proposal };
+          resultPayload = {
+            ok: true,
+            tool: outcome.name,
+            data: { awaiting_confirmation: true, proposal: prepared.proposal } as unknown as Record<string, unknown>,
+          };
+        }
+
+        outcome = await streamChatMessage(
+          {
+            message: turn.text,
+            conversationId: turn.conversationId,
+            userMessageId: serverUserId ?? turn.serverUserId,
+            toolResults: [{ name: outcome.name, result: resultPayload }],
+          },
+          options,
+        );
       } else if (outcome.kind === "client_tool") {
         const result = canRun(outcome.name)
-          ? await runClientTool(outcome.name, outcome.arguments)
+          ? await runClientTool(outcome.name, outcome.arguments, hiddenCalendarIds)
           : {
               ok: false,
               tool: outcome.name,
@@ -249,9 +354,24 @@ export function useChat(defaultCalendarId: string | null = null) {
         throw new ApiError("invalid", "the backend asked for a tool twice");
       }
       isDraftReply = outcome.isDraft;
+      replyActions = outcome.actions;
+      // tasks.delete runs on the backend (unlike calendar mutations, tasks
+      // never leave the server), so its "found this one, delete it?" comes
+      // back as a hint on the finished answer rather than a client_tool
+      // round trip -- the actual delete only happens once the card (or a
+      // typed "yes") calls `confirmPendingAction`.
+      if (outcome.pendingTaskDelete) {
+        pendingAction = {
+          kind: "task_delete",
+          taskId: outcome.pendingTaskDelete.taskId,
+          title: outcome.pendingTaskDelete.title,
+        };
+      }
       finish(outcome.assistantMessageId);
       setStatus("online");
       if (outcome.memorySaved) setMemoryNotice({ content: outcome.memorySaved, at: Date.now() });
+      if (outcome.openTasksTab) taskHooks.onOpenTasksTab?.(outcome.openTasksTab);
+      if (outcome.tasksChanged) taskHooks.onTasksChanged?.();
     } catch (error) {
       if (!mounted.current) return;
       if (error instanceof ApiError && error.kind === "aborted") return;
@@ -269,12 +389,30 @@ export function useChat(defaultCalendarId: string | null = null) {
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || isReplying || isLoading || !conversation) return;
+
+      // A typed reply to an unresolved pending-action card resolves it
+      // directly, the same as clicking its button -- never re-interpreted
+      // by the model. A message that doesn't parse as yes/no (e.g. "actually
+      // make it 3:30") falls through to an ordinary turn instead, so a
+      // follow-up refinement still works.
+      const last = messages[messages.length - 1];
+      if (last?.pendingAction && !last.pendingActionResolved) {
+        const verdict = parseYesNo(trimmed);
+        if (verdict) {
+          const user = makeMessage("user", trimmed);
+          setMessages((prev) => [...prev.filter((m) => !(m.local && m.role === "system")), user]);
+          if (verdict === "yes") confirmPendingAction(last.id);
+          else cancelPendingAction(last.id);
+          return;
+        }
+      }
+
       const user = makeMessage("user", trimmed);
       // Drop stale local notices (errors); the greeting bubble stays.
       setMessages((prev) => [...prev.filter((m) => !(m.local && m.role === "system")), user]);
       void deliver({ text: trimmed, conversationId: conversation.id, userId: user.id });
     },
-    [conversation, deliver, isLoading, isReplying],
+    [conversation, deliver, isLoading, isReplying, messages, confirmPendingAction, cancelPendingAction],
   );
 
   const sendQuickAction = useCallback((action: QuickAction) => send(action.prompt), [send]);
@@ -334,10 +472,88 @@ export function useChat(defaultCalendarId: string | null = null) {
     ]);
   }, []);
 
+  /**
+   * Actually perform a confirmed change to an EXISTING event or task, then
+   * report from what genuinely happened -- never from the request, the
+   * same discipline `confirmProposal` already follows for a new event.
+   */
+  const applyPendingAction = useCallback(
+    async (action: PendingAction) => {
+      try {
+        if (action.kind === "calendar_delete") {
+          const removed = await deleteEvent(action.proposal.eventId);
+          if (!mounted.current) return;
+          if (lastFocusedEventId.current === action.proposal.eventId) lastFocusedEventId.current = null;
+          setMessages((prev) => [
+            ...prev,
+            makeMessage("assistant", `${removed.title} on ${formatWhen(removed.start)} has been cancelled.`, {
+              local: true,
+            }),
+          ]);
+        } else if (action.kind === "calendar_update") {
+          const updated = await updateEvent(action.proposal.eventId, action.proposal.changes ?? {});
+          if (!mounted.current) return;
+          lastFocusedEventId.current = updated.id ?? action.proposal.eventId;
+          setMessages((prev) => [
+            ...prev,
+            makeMessage("assistant", `Done. ${updated.title} is now ${formatWhen(updated.start)}.`, { local: true }),
+          ]);
+        } else {
+          await deleteTask(action.taskId);
+          if (!mounted.current) return;
+          setMessages((prev) => [
+            ...prev,
+            makeMessage("assistant", `Deleted "${action.title}".`, { local: true }),
+          ]);
+          taskHooks.onTasksChanged?.();
+        }
+      } catch (error) {
+        if (!mounted.current) return;
+        // Nothing has changed if this fails -- say so plainly rather than
+        // ever implying the action went through.
+        const text = isCalendarError(error) ? error.message : describeApiError(error);
+        setMessages((prev) => [
+          ...prev,
+          makeMessage("system", `${text} Nothing has been changed.`, { local: true }),
+        ]);
+      }
+    },
+    [taskHooks],
+  );
+
+  const confirmPendingAction = useCallback(
+    (messageId: string) => {
+      const message = messages.find((m) => m.id === messageId);
+      const action = message?.pendingAction;
+      if (!action || message?.pendingActionResolved) return;
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, pendingActionResolved: true } : m)));
+      void applyPendingAction(action);
+    },
+    [messages, applyPendingAction],
+  );
+
+  const cancelPendingAction = useCallback(
+    (messageId: string) => {
+      const message = messages.find((m) => m.id === messageId);
+      const action = message?.pendingAction;
+      if (!action || message?.pendingActionResolved) return;
+      setMessages((prev) => [
+        ...prev.map((m) => (m.id === messageId ? { ...m, pendingActionResolved: true } : m)),
+        makeMessage(
+          "assistant",
+          action.kind === "calendar_update" ? "Okay, I'll leave it as is." : "Okay, I won't change that.",
+          { local: true },
+        ),
+      ]);
+    },
+    [messages],
+  );
+
   /** Start a fresh conversation. Any in-flight reply is cancelled. */
   const newConversation = useCallback(async () => {
     inFlight.current?.abort();
     setFailed(null);
+    lastFocusedEventId.current = null;
     try {
       const created = await createConversation();
       if (!mounted.current) return;
@@ -367,6 +583,8 @@ export function useChat(defaultCalendarId: string | null = null) {
     newConversation,
     confirmProposal,
     cancelProposal,
+    confirmPendingAction,
+    cancelPendingAction,
     memoryNotice,
   };
 }

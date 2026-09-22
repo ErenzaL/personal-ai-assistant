@@ -1,11 +1,12 @@
+import { useEffect, useState } from "react";
+import { ProfileCard } from "./ProfileCard";
 import { GeneralSection } from "./GeneralSection";
-import { AssistantSection } from "./AssistantSection";
 import { MemorySection } from "./MemorySection";
-import { CalendarSection } from "./CalendarSection";
+import { ConnectionsSection } from "./ConnectionsSection";
 import { NotificationsSection } from "./NotificationsSection";
-import { GmailSection } from "./GmailSection";
 import { DataSection } from "./DataSection";
 import { clearConversations } from "../../services/api";
+import { getAppVersion } from "../../services/native";
 import type { AssistantSettings, SettingsPatch } from "../../types/settings";
 import "./SettingsPanel.css";
 
@@ -16,6 +17,8 @@ export interface SettingsPanelProps {
   onHistoryCleared: () => void;
   memoryItemCount: number;
   onOpenMemoryReview: () => void;
+  onOpenCalendar: () => void;
+  onOpenGmail: () => void;
   onClearMemories: () => Promise<boolean>;
   memoryError: string | null;
 }
@@ -27,34 +30,43 @@ export function SettingsPanel({
   onHistoryCleared,
   memoryItemCount,
   onOpenMemoryReview,
+  onOpenCalendar,
+  onOpenGmail,
   onClearMemories,
   memoryError,
 }: SettingsPanelProps) {
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getAppVersion().then((v) => alive && setVersion(v));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="settings-panel">
       {memoryError && <p className="settings-error">{memoryError}</p>}
+      <ProfileCard settings={settings} onUpdate={onUpdateSettings} />
       <GeneralSection
-        edgeActivation={settings.edgeActivation}
+        settings={settings}
         onChangeEdgeActivation={(enabled) => onUpdateSettings({ edgeActivation: enabled })}
+        onChangeResponseStyle={(style) => onUpdateSettings({ responseStyle: style })}
       />
-      <AssistantSection settings={settings} onUpdate={onUpdateSettings} />
       <MemorySection
         enabled={settings.memoryEnabled}
         onChangeEnabled={(enabled) => onUpdateSettings({ memoryEnabled: enabled })}
         itemCount={memoryItemCount}
         onOpenReview={onOpenMemoryReview}
       />
-      <CalendarSection
-        defaultCalendarId={settings.defaultCalendarId}
-        onChangeDefaultCalendar={(id) => onUpdateSettings({ defaultCalendarId: id })}
-        reminderMinutes={settings.reminderMinutes}
-        onChangeReminderMinutes={(minutes) => onUpdateSettings({ reminderMinutes: minutes })}
-      />
+      <ConnectionsSection onOpenCalendar={onOpenCalendar} onOpenGmail={onOpenGmail} />
       <NotificationsSection
         enabled={settings.calendarNotifications}
         onChange={(enabled) => onUpdateSettings({ calendarNotifications: enabled })}
+        reminderMinutes={settings.reminderMinutes}
+        onChangeReminderMinutes={(minutes) => onUpdateSettings({ reminderMinutes: minutes })}
       />
-      <GmailSection />
       <DataSection
         onClearHistory={async () => {
           await clearConversations();
@@ -64,6 +76,7 @@ export function SettingsPanel({
           await onClearMemories();
         }}
       />
+      {version && <p className="settings-version">Dully {version}</p>}
     </div>
   );
 }

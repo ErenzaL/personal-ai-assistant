@@ -11,6 +11,7 @@ import type {
   CalendarError,
   CalendarEvent,
   CalendarInfo,
+  EventChanges,
 } from "../types/calendar";
 
 /** True when running inside the Tauri webview (false in a plain browser tab). */
@@ -113,6 +114,48 @@ export async function createEvent(input: {
         notes: input.notes ?? null,
       },
     });
+  } catch (error) {
+    throw toCalendarError(error);
+  }
+}
+
+/** One event by id, exactly as EventKit currently has it. */
+export async function getEvent(id: string): Promise<CalendarEvent> {
+  if (!inTauri()) throw UNSUPPORTED;
+  try {
+    return await invoke<CalendarEvent>("calendar_get_event", { eventId: id });
+  } catch (error) {
+    throw toCalendarError(error);
+  }
+}
+
+/** Change only the given fields of an existing event. Only ever called
+ *  after the user confirms a proposed change. */
+export async function updateEvent(id: string, changes: EventChanges): Promise<CalendarEvent> {
+  if (!inTauri()) throw UNSUPPORTED;
+  try {
+    return await invoke<CalendarEvent>("calendar_update_event", {
+      eventId: id,
+      changes: {
+        title: changes.title ?? null,
+        start: changes.start ?? null,
+        end: changes.end ?? null,
+        calendar_id: changes.calendarId ?? null,
+        location: changes.location ?? null,
+        notes: changes.notes ?? null,
+      },
+    });
+  } catch (error) {
+    throw toCalendarError(error);
+  }
+}
+
+/** Remove an event, returning what it was immediately before removal. Only
+ *  ever called after the user confirms. */
+export async function deleteEvent(id: string): Promise<CalendarEvent> {
+  if (!inTauri()) throw UNSUPPORTED;
+  try {
+    return await invoke<CalendarEvent>("calendar_delete_event", { eventId: id });
   } catch (error) {
     throw toCalendarError(error);
   }

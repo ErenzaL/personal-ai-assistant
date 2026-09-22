@@ -56,6 +56,10 @@ export interface AssistantSettings {
   /** Whether ordinary conversation is scanned for things worth remembering.
    *  Off stops new memories; existing ones stay and keep being used. */
   memoryEnabled: boolean;
+  /** EventKit identifiers hidden from Dully -- excluded from calendar reads
+   *  and from the "add new events to" choices. The calendars themselves are
+   *  untouched; this only affects what Dully sees. */
+  hiddenCalendarIds: string[];
 }
 
 export type SettingsPatch = Partial<
@@ -67,6 +71,7 @@ export type SettingsPatch = Partial<
     | "calendarNotifications"
     | "edgeActivation"
     | "memoryEnabled"
+    | "hiddenCalendarIds"
   >
 > & {
   /** Empty string clears the choice and falls back to the macOS default. */

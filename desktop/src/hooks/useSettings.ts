@@ -18,6 +18,7 @@ const FALLBACK: AssistantSettings = {
   calendarNotifications: true,
   edgeActivation: true,
   memoryEnabled: true,
+  hiddenCalendarIds: [],
 };
 
 function fromDto(dto: AssistantSettingsDto): AssistantSettings {
@@ -30,6 +31,7 @@ function fromDto(dto: AssistantSettingsDto): AssistantSettings {
     calendarNotifications: dto.calendar_notifications,
     edgeActivation: dto.edge_activation,
     memoryEnabled: dto.memory_enabled,
+    hiddenCalendarIds: dto.hidden_calendar_ids,
   };
 }
 
@@ -76,6 +78,7 @@ export function useSettings() {
           calendar_notifications: patch.calendarNotifications,
           edge_activation: patch.edgeActivation,
           memory_enabled: patch.memoryEnabled,
+          hidden_calendar_ids: patch.hiddenCalendarIds,
         }),
       );
       if (!mounted.current) return;

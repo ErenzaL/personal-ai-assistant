@@ -7,6 +7,7 @@
  * from and written to macOS itself, like the calendar permission.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 
 export interface LoginItem {
   /** False outside an app bundle, e.g. the bare development binary. */
@@ -43,4 +44,15 @@ export async function getLoginItem(): Promise<LoginItem> {
 export async function setLoginItem(enabled: boolean): Promise<LoginItem> {
   if (!inTauri()) return NO_LOGIN_ITEM;
   return invoke<LoginItem>("set_login_item", { enabled });
+}
+
+/** The packaged app's version (e.g. "1.0.0"), for the Settings footer. Null
+ *  outside the desktop app, where there is no bundle to read it from. */
+export async function getAppVersion(): Promise<string | null> {
+  if (!inTauri()) return null;
+  try {
+    return await getVersion();
+  } catch {
+    return null;
+  }
 }

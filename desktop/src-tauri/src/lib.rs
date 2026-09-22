@@ -83,6 +83,9 @@ pub fn run() {
             calendar::commands::calendar_list_calendars,
             calendar::commands::calendar_list_events,
             calendar::commands::calendar_create_event,
+            calendar::commands::calendar_get_event,
+            calendar::commands::calendar_update_event,
+            calendar::commands::calendar_delete_event,
             calendar::commands::calendar_open_settings,
         ])
         .setup(|app| {

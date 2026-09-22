@@ -1,7 +1,7 @@
 import type { BackendStatus } from "../../types/chat";
 import "./ChatHeader.css";
 
-export type PanelView = "chat" | "settings" | "memory";
+export type PanelView = "chat" | "settings" | "memory" | "calendar" | "gmail" | "tasks";
 
 export interface ChatHeaderProps {
   name: string;
@@ -16,6 +16,20 @@ export interface ChatHeaderProps {
 const TITLE: Record<Exclude<PanelView, "chat">, string> = {
   settings: "Settings",
   memory: "What Dully remembers",
+  calendar: "Calendar",
+  gmail: "Gmail",
+  tasks: "Tasks",
+};
+
+/** Every non-chat view steps back to Settings, its one parent, except
+ *  Settings itself and Tasks (a sibling top-level view), which step back
+ *  to chat. */
+const BACK_LABEL: Record<Exclude<PanelView, "chat">, string> = {
+  settings: "Back to chat",
+  memory: "Back to Settings",
+  calendar: "Back to Settings",
+  gmail: "Back to Settings",
+  tasks: "Back to chat",
 };
 
 const STATUS_LABEL: Record<BackendStatus, string> = {
@@ -34,7 +48,7 @@ export function ChatHeader({ name, status, view, onNewChat, onOpenSettings, onBa
           type="button"
           className="chat-header__button"
           onClick={onBack}
-          aria-label={view === "memory" ? "Back to Settings" : "Back to chat"}
+          aria-label={inChat ? "Back to chat" : BACK_LABEL[view]}
           title="Back"
         >
           ‹

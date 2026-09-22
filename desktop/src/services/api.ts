@@ -4,6 +4,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { API_BASE_URL, API_TIMEOUT_MS } from "../config";
+import type { AssistantAction } from "../types/chat";
 
 let baseUrl: Promise<string> | null = null;
 
@@ -232,6 +233,7 @@ export interface AssistantSettingsDto {
   calendar_notifications: boolean;
   edge_activation: boolean;
   memory_enabled: boolean;
+  hidden_calendar_ids: string[];
 }
 
 // --- Endpoints ---------------------------------------------------------------
@@ -281,7 +283,25 @@ export interface ChatTurnRequest {
 
 /** Either the reply finished, or the backend needs a tool run locally first. */
 export type StreamResult =
-  | { kind: "answer"; assistantMessageId: string; memorySaved: string | null; isDraft: boolean }
+  | {
+      kind: "answer";
+      assistantMessageId: string;
+      memorySaved: string | null;
+      isDraft: boolean;
+      /** Set only for an explicit "open my tasks" navigation command: which
+       *  Tasks-panel tab to open immediately, with no button. */
+      openTasksTab: string | null;
+      /** Buttons to show under this reply -- normally at most one, and
+       *  often none. The panel never opens itself for these. */
+      actions: AssistantAction[];
+      /** True when some task or checklist item was created, changed, or had
+       *  its status flipped this turn. */
+      tasksChanged: boolean;
+      /** tasks.delete resolved to exactly one task this turn, awaiting
+       *  confirmation -- rendered as a pending-action card. Deletion itself
+       *  only happens once the user confirms. */
+      pendingTaskDelete: { taskId: string; title: string } | null;
+    }
   | { kind: "client_tool"; name: string; arguments: Record<string, unknown> };
 
 export interface StreamMeta {
@@ -296,6 +316,21 @@ export interface StreamOptions {
   onDelta: (text: string) => void;
   /** Abort to cancel (e.g. when the chat panel closes). */
   signal?: AbortSignal;
+}
+
+/** Only ever a small, backend-computed list; malformed entries are dropped
+ *  rather than shown, since a broken button is worse than none. */
+function parseActions(raw: unknown): AssistantAction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AssistantAction[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const { type, label, filter } = item as Record<string, unknown>;
+    if (type === "open_task_panel" && typeof label === "string" && label) {
+      out.push({ type, label, filter: typeof filter === "string" ? filter : undefined });
+    }
+  }
+  return out;
 }
 
 /**
@@ -325,6 +360,10 @@ export async function streamChatMessage(
   let assistantMessageId: string | null = null;
   let memorySaved: string | null = null;
   let isDraft = false;
+  let openTasksTab: string | null = null;
+  let actions: AssistantAction[] = [];
+  let tasksChanged = false;
+  let pendingTaskDelete: { taskId: string; title: string } | null = null;
   let clientTool: { name: string; arguments: Record<string, unknown> } | null = null;
   try {
     for await (const { event, data } of readSse(response.body)) {
@@ -343,10 +382,23 @@ export async function streamChatMessage(
           assistant_message_id?: string;
           memory_saved?: string | null;
           is_draft?: boolean;
+          open_tasks_tab?: string | null;
+          actions?: unknown;
+          tasks_changed?: boolean;
+          pending_task_delete?: { task_id?: unknown; title?: unknown } | null;
         };
         assistantMessageId = d.assistant_message_id ?? "";
         memorySaved = typeof d.memory_saved === "string" ? d.memory_saved : null;
         isDraft = d.is_draft === true;
+        openTasksTab = typeof d.open_tasks_tab === "string" ? d.open_tasks_tab : null;
+        actions = parseActions(d.actions);
+        tasksChanged = d.tasks_changed === true;
+        pendingTaskDelete =
+          d.pending_task_delete &&
+          typeof d.pending_task_delete.task_id === "string" &&
+          typeof d.pending_task_delete.title === "string"
+            ? { taskId: d.pending_task_delete.task_id, title: d.pending_task_delete.title }
+            : null;
         break;
       } else if (event === "error") {
         const { code, message: serverMessage } = JSON.parse(data) as { code?: string; message?: string };
@@ -366,7 +418,16 @@ export async function streamChatMessage(
     if (signal?.aborted) throw new ApiError("aborted", "cancelled");
     throw new ApiError("interrupted", "stream ended early");
   }
-  return { kind: "answer", assistantMessageId, memorySaved, isDraft };
+  return {
+    kind: "answer",
+    assistantMessageId,
+    memorySaved,
+    isDraft,
+    openTasksTab,
+    actions,
+    tasksChanged,
+    pendingTaskDelete,
+  };
 }
 
 // --- Personal memory ----------------------------------------------------------
@@ -414,6 +475,7 @@ export function updateAssistantSettings(patch: {
   calendar_notifications?: boolean;
   edge_activation?: boolean;
   memory_enabled?: boolean;
+  hidden_calendar_ids?: string[];
 }): Promise<AssistantSettingsDto> {
   return request<AssistantSettingsDto>("/settings", {
     method: "PATCH",
@@ -430,6 +492,9 @@ export interface GmailStatusDto {
   /** Set only when there is something more useful to say than "not
    *  connected" -- currently just a refresh that couldn't reach Google. */
   detail: string | null;
+  /** The connected account's own address, when known. Never set unless
+   *  `connected` is true. */
+  email: string | null;
 }
 
 /** Never rejects with the connect-only errors below; those come from
@@ -451,4 +516,81 @@ export function connectGmail(): Promise<GmailStatusDto> {
 
 export function disconnectGmail(): Promise<GmailStatusDto> {
   return request<GmailStatusDto>("/gmail/disconnect", { method: "POST" });
+}
+
+// --- Tasks -----------------------------------------------------------------
+// SQLite is the source of truth: every mutation here goes to a deterministic
+// endpoint and the panel re-fetches from the response, so the UI never shows
+// a change the database refused.
+
+export interface TaskItemDto {
+  id: string;
+  task_id: string;
+  text: string;
+  is_completed: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskDto {
+  id: string;
+  title: string;
+  description: string;
+  due_at: string | null;
+  priority: string;
+  status: string;
+  remind_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  category: string;
+  items: TaskItemDto[];
+}
+
+export type TaskFilter = "today" | "tomorrow" | "week" | "upcoming" | "overdue" | "open" | "completed" | "cancelled" | "all";
+
+export function listTasks(filter: TaskFilter): Promise<TaskDto[]> {
+  return request<TaskDto[]>(`/tasks?filter=${encodeURIComponent(filter)}`);
+}
+
+export function createTask(body: {
+  title: string;
+  description?: string;
+  due_at?: string;
+  priority?: string;
+  category?: string;
+  items?: string[];
+}): Promise<TaskDto> {
+  return request<TaskDto>("/tasks", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function completeTask(id: string): Promise<TaskDto> {
+  return request<TaskDto>(`/tasks/${id}/complete`, { method: "POST" });
+}
+
+export function reopenTask(id: string): Promise<TaskDto> {
+  return request<TaskDto>(`/tasks/${id}/reopen`, { method: "POST" });
+}
+
+export function addTaskItem(taskId: string, text: string): Promise<TaskDto> {
+  return request<TaskDto>(`/tasks/${taskId}/items`, { method: "POST", body: JSON.stringify({ text }) });
+}
+
+export function completeTaskItem(taskId: string, itemId: string): Promise<TaskDto> {
+  return request<TaskDto>(`/tasks/${taskId}/items/${itemId}/complete`, { method: "POST" });
+}
+
+export function reopenTaskItem(taskId: string, itemId: string): Promise<TaskDto> {
+  return request<TaskDto>(`/tasks/${taskId}/items/${itemId}/reopen`, { method: "POST" });
+}
+
+export function deleteTaskItem(taskId: string, itemId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/tasks/${taskId}/items/${itemId}`, { method: "DELETE" });
+}
+
+/** Hard delete. Only ever called after the user confirms a pending
+ *  tasks.delete action -- never a casual one-click action. */
+export function deleteTask(id: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/tasks/${id}`, { method: "DELETE" });
 }

@@ -9,7 +9,7 @@ use tauri::State;
 
 use crate::calendar::eventkit::{BridgeHandle, CalendarBridge};
 use crate::calendar::types::{
-    CalendarAuthorization, CalendarError, CalendarErrorCode, CalendarEvent, CalendarInfo, NewEvent,
+    CalendarAuthorization, CalendarError, CalendarErrorCode, CalendarEvent, CalendarInfo, EventChanges, NewEvent,
 };
 
 /// Upper bounds on command arguments. Nothing legitimate comes near them;
@@ -126,6 +126,61 @@ pub async fn calendar_create_event(
     bounded(event.notes.as_deref().unwrap_or(""), MAX_NOTES_CHARS, "notes")?;
     let handle = bridge.handle()?;
     tauri::async_runtime::spawn_blocking(move || handle.create_event(event))
+        .await
+        .map_err(|_| CalendarError::unavailable("The calendar request was interrupted."))?
+}
+
+/// One event by id, exactly as EventKit currently has it. Used both to
+/// preserve fields an update didn't touch, and to resolve "it" across turns
+/// by id rather than re-matching by title.
+#[tauri::command]
+pub async fn calendar_get_event(
+    bridge: State<'_, CalendarBridge>,
+    event_id: String,
+) -> Result<CalendarEvent, CalendarError> {
+    bounded(&event_id, MAX_ID_CHARS, "event id")?;
+    let handle = bridge.handle()?;
+    tauri::async_runtime::spawn_blocking(move || handle.get_event(event_id))
+        .await
+        .map_err(|_| CalendarError::unavailable("The calendar request was interrupted."))?
+}
+
+/// Change only the given fields of an existing event.
+///
+/// Called only after the user confirms a proposed change shown in the chat
+/// panel -- nothing in the assistant path reaches this without an explicit
+/// Confirm (or an equivalent typed "yes").
+#[tauri::command]
+pub async fn calendar_update_event(
+    bridge: State<'_, CalendarBridge>,
+    event_id: String,
+    changes: EventChanges,
+) -> Result<CalendarEvent, CalendarError> {
+    bounded(&event_id, MAX_ID_CHARS, "event id")?;
+    bounded(changes.title.as_deref().unwrap_or(""), MAX_TITLE_CHARS, "title")?;
+    bounded(changes.start.as_deref().unwrap_or(""), MAX_DATE_CHARS, "start date")?;
+    bounded(changes.end.as_deref().unwrap_or(""), MAX_DATE_CHARS, "end date")?;
+    bounded(changes.calendar_id.as_deref().unwrap_or(""), MAX_ID_CHARS, "calendar id")?;
+    bounded(changes.location.as_deref().unwrap_or(""), MAX_LOCATION_CHARS, "location")?;
+    bounded(changes.notes.as_deref().unwrap_or(""), MAX_NOTES_CHARS, "notes")?;
+    let handle = bridge.handle()?;
+    tauri::async_runtime::spawn_blocking(move || handle.update_event(event_id, changes))
+        .await
+        .map_err(|_| CalendarError::unavailable("The calendar request was interrupted."))?
+}
+
+/// Remove an event, returning what it was immediately before removal.
+///
+/// Called only after the user confirms -- nothing in the assistant path
+/// reaches this without an explicit Confirm (or an equivalent typed "yes").
+#[tauri::command]
+pub async fn calendar_delete_event(
+    bridge: State<'_, CalendarBridge>,
+    event_id: String,
+) -> Result<CalendarEvent, CalendarError> {
+    bounded(&event_id, MAX_ID_CHARS, "event id")?;
+    let handle = bridge.handle()?;
+    tauri::async_runtime::spawn_blocking(move || handle.delete_event(event_id))
         .await
         .map_err(|_| CalendarError::unavailable("The calendar request was interrupted."))?
 }

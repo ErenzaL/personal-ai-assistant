@@ -55,6 +55,23 @@ class Task:
     completed_at: str | None
     created_at: str
     updated_at: str
+    """Free-text label ("School", "Work"); "" means uncategorised."""
+    category: str = ""
+
+
+@dataclass(frozen=True)
+class TaskItem:
+    """One checklist line under a task. Deliberately independent of the
+    parent task's own status: completing every item never completes the
+    task itself, only a separate, explicit action does."""
+
+    id: str
+    task_id: str
+    text: str
+    is_completed: bool
+    position: int
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)

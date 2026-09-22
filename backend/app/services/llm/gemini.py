@@ -47,7 +47,17 @@ class GeminiService(HttpLLMService):
         ]
         payload: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1024},
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1024,
+                # This model always reasons before answering ("thinking": true
+                # in its own model metadata) and cannot fully disable it
+                # (thinkingBudget: 0 is rejected outright). Tool selection and
+                # ordinary replies don't need deep reasoning, so capping it at
+                # "low" trims worst-case latency without hurting the (already
+                # simple) json-only / short-reply tasks this app asks for.
+                "thinkingConfig": {"thinkingLevel": "low"},
+            },
         }
         if system_parts:
             payload["system_instruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}

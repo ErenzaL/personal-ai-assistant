@@ -33,7 +33,16 @@ from app.services.tools.gmail import (
     gmail_tools,
 )
 from app.services.tools.selector import ToolCall, select
-from app.services.tools.tasks import TaskTools
+from app.services.tools.tasks import (
+    TASKS_CANCEL,
+    TASKS_COMPLETE,
+    TASKS_COMPLETE_ITEM,
+    TASKS_CREATE,
+    TASKS_LIST,
+    TASKS_OPEN_PANEL,
+    TASKS_UPDATE,
+    TaskTools,
+)
 
 
 def build_registry(db: sqlite3.Connection) -> ToolRegistry:
@@ -49,6 +58,13 @@ __all__ = [
     "GMAIL_READ",
     "GMAIL_RECENT",
     "GMAIL_SEARCH",
+    "TASKS_CANCEL",
+    "TASKS_COMPLETE",
+    "TASKS_COMPLETE_ITEM",
+    "TASKS_CREATE",
+    "TASKS_LIST",
+    "TASKS_OPEN_PANEL",
+    "TASKS_UPDATE",
     "ToolCall",
     "ToolOutcome",
     "ToolRegistry",

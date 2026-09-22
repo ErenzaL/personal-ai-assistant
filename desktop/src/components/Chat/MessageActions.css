@@ -1,0 +1,30 @@
+/* Sits directly under the assistant bubble it belongs to, reading as part
+   of the same reply rather than a separate toolbar. */
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  gap: 6px;
+  max-width: 90%;
+  margin-top: -4px;
+}
+
+.message-actions__button {
+  padding: 5px 12px;
+  border: 1px solid var(--chat-border);
+  border-radius: 999px;
+  background: var(--chat-bg);
+  color: var(--chat-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.message-actions__button:hover,
+.message-actions__button:focus-visible {
+  background: var(--chat-bubble-assistant);
+  border-color: var(--chat-accent);
+  color: var(--chat-accent);
+}

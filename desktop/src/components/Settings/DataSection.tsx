@@ -48,28 +48,28 @@ export function DataSection({ onClearHistory, onClearMemories }: DataSectionProp
         </button>
       </div>
     ) : (
-      <div className="settings-field">
-        <span className="settings-field__label">{label}</span>
-        <button
-          type="button"
-          className="settings-link settings-link--danger"
-          onClick={() => {
-            setNote(null);
-            setPending(action);
-          }}
-        >
-          Clear
-        </button>
-      </div>
+      <button
+        type="button"
+        className="settings-link settings-link--danger settings-link--block"
+        onClick={() => {
+          setNote(null);
+          setPending(action);
+        }}
+      >
+        {label}
+      </button>
     );
 
   return (
     <section className="settings-section">
       <div className="settings-section__head">
-        <h3 className="settings-section__title">Data</h3>
+        <h3 className="settings-section__title">Data &amp; Privacy</h3>
       </div>
-      {row("history", "Conversation history", "Delete every conversation? This cannot be undone.")}
-      {row("memories", "Personal memories", "Forget everything Dully remembers about you?")}
+      <div className="settings-card">
+        {row("history", "Clear conversation history", "Delete every conversation? This cannot be undone.")}
+        {row("memories", "Clear saved memories", "Forget everything Dully remembers about you?")}
+      </div>
+      <p className="settings-hint">These actions can't be undone.</p>
       {note && <p className="settings-hint">{note}</p>}
     </section>
   );

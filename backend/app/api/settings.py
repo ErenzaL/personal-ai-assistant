@@ -31,6 +31,9 @@ class SettingsOut(BaseModel):
     calendar_notifications: bool
     edge_activation: bool
     memory_enabled: bool
+    """EventKit identifiers hidden from Dully (excluded from calendar reads
+    and from the "new events go to" choices)."""
+    hidden_calendar_ids: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_model(cls, prefs: AssistantPreferences) -> "SettingsOut":
@@ -43,6 +46,7 @@ class SettingsOut(BaseModel):
             calendar_notifications=prefs.calendar_notifications,
             edge_activation=prefs.edge_activation,
             memory_enabled=prefs.memory_enabled,
+            hidden_calendar_ids=list(prefs.hidden_calendar_ids),
         )
 
 
@@ -55,6 +59,7 @@ class SettingsUpdate(BaseModel):
     calendar_notifications: bool | None = None
     edge_activation: bool | None = None
     memory_enabled: bool | None = None
+    hidden_calendar_ids: list[str] | None = None
 
 
 @router.get("", response_model=SettingsOut)
@@ -73,6 +78,7 @@ def update_settings(body: SettingsUpdate, db: sqlite3.Connection = Depends(get_d
             calendar_notifications=body.calendar_notifications,
             edge_activation=body.edge_activation,
             memory_enabled=body.memory_enabled,
+            hidden_calendar_ids=body.hidden_calendar_ids,
         )
     except InvalidPreference as err:
         raise HTTPException(status_code=422, detail=err.message) from err

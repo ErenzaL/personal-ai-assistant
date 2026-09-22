@@ -126,6 +126,21 @@ pub struct NewEvent {
     pub notes: Option<String>,
 }
 
+/// Fields to change on an existing event. Every field is optional so only
+/// what the caller actually asked to change needs to be sent -- everything
+/// else is left exactly as EventKit already has it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EventChanges {
+    pub title: Option<String>,
+    /// Local ISO 8601, same shape `NewEvent::start` accepts.
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub calendar_id: Option<String>,
+    /// Send an empty string to clear the field; omit to leave it alone.
+    pub location: Option<String>,
+    pub notes: Option<String>,
+}
+
 /// Structured failure. Shape matches the errors the FastAPI layer returns
 /// (`code` + `message`), so the frontend handles both the same way.
 #[derive(Debug, Clone, Serialize)]

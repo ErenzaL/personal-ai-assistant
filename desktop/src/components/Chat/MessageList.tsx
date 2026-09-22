@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 import { MessageBubble } from "./MessageBubble";
 import { EventProposalCard } from "./EventProposalCard";
+import { PendingActionCard } from "./PendingActionCard";
 import { DraftEmailCard } from "./DraftEmailCard";
-import type { Message } from "../../types/chat";
+import { MessageActions } from "./MessageActions";
+import type { AssistantAction, Message } from "../../types/chat";
 import "./MessageList.css";
 
 export interface MessageListProps {
@@ -15,6 +17,9 @@ export interface MessageListProps {
   onRetry?: () => void;
   onConfirmProposal?: (messageId: string, proposal: import("../../types/calendar").EventProposal) => void;
   onCancelProposal?: (messageId: string) => void;
+  onAction?: (action: AssistantAction) => void;
+  onConfirmPendingAction?: (messageId: string) => void;
+  onCancelPendingAction?: (messageId: string) => void;
 }
 
 /** How close to the bottom (px) the user must be for auto-follow to stay on. */
@@ -32,6 +37,9 @@ export function MessageList({
   onRetry,
   onConfirmProposal,
   onCancelProposal,
+  onAction,
+  onConfirmPendingAction,
+  onCancelPendingAction,
 }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -78,6 +86,17 @@ export function MessageList({
               onConfirm={(p) => onConfirmProposal?.(message.id, p)}
               onCancel={() => onCancelProposal?.(message.id)}
             />
+          )}
+          {message.pendingAction && (
+            <PendingActionCard
+              action={message.pendingAction}
+              resolved={message.pendingActionResolved}
+              onConfirm={() => onConfirmPendingAction?.(message.id)}
+              onCancel={() => onCancelPendingAction?.(message.id)}
+            />
+          )}
+          {message.actions && message.actions.length > 0 && (
+            <MessageActions actions={message.actions} onAction={(action) => onAction?.(action)} />
           )}
         </Fragment>
       ))}

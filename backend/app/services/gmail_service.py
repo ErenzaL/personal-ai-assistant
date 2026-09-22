@@ -105,6 +105,9 @@ class GmailStatus:
     """Set only when `connected` is False and there is something more useful
     to say than that -- e.g. a network hiccup while checking. Safe to show."""
     detail: str | None = None
+    """The connected Google account's own address, when connected and it
+    could be fetched. Never guessed at, and never set when not connected."""
+    email: str | None = None
 
 
 def _credentials_path() -> Path | None:
@@ -193,7 +196,23 @@ def _fresh_credentials() -> tuple[Credentials | None, str | None]:
 
 def status() -> GmailStatus:
     creds, detail = _fresh_credentials()
-    return GmailStatus(connected=creds is not None, detail=detail)
+    if creds is None:
+        return GmailStatus(connected=False, detail=detail)
+    return GmailStatus(connected=True, detail=detail, email=_connected_email(creds))
+
+
+def _connected_email(creds: Credentials) -> str | None:
+    """The signed-in account's own address, so Settings can show which
+    account is connected. Best-effort: a failure here (network, a scope
+    hiccup) never affects the connected/not-connected answer itself."""
+    try:
+        client = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        profile = client.users().getProfile(userId="me").execute()
+        email = profile.get("emailAddress")
+        return email if isinstance(email, str) and email else None
+    except Exception:
+        log.info("gmail: could not fetch the connected account's address", exc_info=True)
+        return None
 
 
 def connect() -> None:
